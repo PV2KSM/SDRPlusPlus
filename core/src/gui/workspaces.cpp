@@ -9,6 +9,7 @@
 #include <signal_path/signal_path.h>
 #include <utils/flog.h>
 #include <set>
+#include <map>
 #include <cmath>
 #include <vector>
 #include <algorithm>
@@ -52,6 +53,19 @@ namespace workspaces {
         case HAM: return HAM_MENUS.count(name) > 0;
         default: return true;
         }
+    }
+
+    std::string displayName(const std::string& name) {
+        static const std::map<std::string, std::string> N = {
+            { "Source", "Fonte (receptor)" }, { "Radio", "Rádio" }, { "Frequency Manager", "Canais e scanner" },
+            { "Recorder", "Gravador" }, { "Sinks", "Saída de áudio" }, { "Noise Reduction logmmse", "Redução de ruído" },
+            { "ADS-B", "ADS-B · radar" }, { "ACARS", "ACARS · CPDLC" }, { "Band Plan", "Plano de bandas" },
+            { "Display", "Tela" }, { "Theme", "Tema" }, { "VFO Color", "Cores dos VFOs" },
+            { "Module Manager", "Módulos" }, { "Scanner", "Varredura de faixa" }, { "FT8/FT4 Decoder", "FT8 / FT4" },
+            { "VHF Digital Modes", "Modos digitais (DSD)" },
+        };
+        auto it = N.find(name);
+        return it == N.end() ? name : it->second;
     }
 
     void init() {
@@ -317,8 +331,11 @@ namespace workspaces {
     static int watchedMode = -2;
     static float watchedBw = -1;
     static Workspace watchedWs = _COUNT;
+    static bool scannerActive = false;   // atualizado pela barra de status
     static void trackBandwidth(int mode, float bw) {
         if (mode < 0 || bw <= 0) { return; }
+        // Com o scanner rodando a largura vem dos canais da lista: não é escolha do usuário
+        if (scannerActive) { watchedMode = -2; return; }
         if (mode != watchedMode || cur != watchedWs) {
             watchedMode = mode;
             watchedWs = cur;
@@ -381,14 +398,16 @@ namespace workspaces {
                 if (!inst.module.info || !inst.instance || std::string(inst.module.info->name) != "ch_extravhf_decoder") { continue; }
                 json j = json::parse(inst.instance->handleDebugCommand("get_dmr_status", RADIO_VFO), nullptr, false);
                 if (j.is_discarded() || j.contains("error")) { continue; }
-                std::string sync = j.value("sync", std::string());
-                if (sync.empty() && j.contains("status") && j["status"].is_object()) { sync = j["status"].value("sync", std::string()); }
-                s.dmrSync = !sync.empty() && sync != "none" && sync != "NONE" && sync != "-";
-                s.dmrInfo = sync;
+                bool sync = j.contains("sync") && j["sync"].is_boolean() && j["sync"].get<bool>();
+                bool voice = j.contains("voice") && j["voice"].is_boolean() && j["voice"].get<bool>();
+                int cc = (j.contains("color_code") && j["color_code"].is_number()) ? j["color_code"].get<int>() : -1;
+                s.dmrSync = sync;
+                s.dmrInfo = std::string(voice ? "voz" : "sincronizado") + (cc >= 0 ? " · CC " + std::to_string(cc) : "");
                 break;
             }
         }
         status = s;
+        scannerActive = s.scanning;
     }
 
     // ------------------------------------------------------------------ desenho

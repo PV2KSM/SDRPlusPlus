@@ -1,4 +1,4 @@
-# SDR++Brown — versão simples (RTL-SDR v3: banda aérea, DMR, scanner, ADS-B)
+# SDR++Brown — versão simples (RTL-SDR v3: banda aérea, DMR, scanner, ADS-B, ACARS/CPDLC)
 
 ## O que muda em relação ao original
 
@@ -26,19 +26,61 @@
 
 ## Abas: Aviação, Radioamador, Explorar
 
-No topo do painel lateral ficam três abas. Cada uma mostra só os painéis do seu
-uso e **lembra a própria sintonia** (frequência, modo, largura) e a **própria lista
-de canais** do scanner:
+As abas ficam na **faixa de controle**, acima da cascata. Cada aba mostra só os
+painéis do seu uso e **lembra a própria sintonia** (frequência, modo, largura) e a
+**própria lista de canais** do scanner.
 
-- **Aviação:** Source, Radio, listas/scanner, ADS-B, gravador, redução de ruído.
+Na mesma faixa:
+
+- **MODO:** só os modos que fazem sentido na aba (Aviação: AM, NFM, DMR;
+  Radioamador: NFM, USB, LSB, CW, AM, DMR; Explorar: todos).
+- **LARGURA:** larguras sugeridas para o modo (Aviação/AM: 6k, 8,33k, 12,5k, 25k;
+  SSB: 1,8–3k; CW: 200–800 Hz...) e um campo para ajuste fino (arraste ou dê duplo
+  clique e digite). **A largura fica salva por aba e por modo**: AM na Aviação pode
+  ser 8,33k e AM no Radioamador 6k, cada uma lembrada separadamente. Arrastar a
+  borda do VFO na cascata também é lembrado.
+- **SQUELCH:** liga/desliga e nível.
+
+Embaixo da cascata, a **barra de status** mostra a sintonia, o scanner
+(procurando/recebendo/segurando + canal), o DMR (sincronismo e color code), o
+ADS-B (aeronaves) e o ACARS (mensagens e a última recebida).
+
+Os painéis do menu lateral agora têm nomes em português (Fonte, Rádio, Canais e
+scanner, Gravador, Saída de áudio...).
+
+- **Aviação:** Fonte, Rádio, canais/scanner, ADS-B, ACARS, gravador, redução de ruído.
   Começa em 118,100 MHz AM.
 - **Radioamador:** Source, Radio, listas/scanner, plano de bandas, FT8, varredura
   de faixa, gravador. Começa em 145,000 MHz NFM.
 - **Explorar:** tudo liberado, como o SDR++ original.
 
-Ao trocar de aba, o scanner e o ADS-B param (o RTL-SDR tem um sintonizador só).
+Ao trocar de aba, o scanner, o ADS-B e o ACARS param (o RTL-SDR tem um sintonizador só).
 O tema novo **Simples** (escuro, cantos arredondados) é o padrão; os temas antigos
 continuam no menu Theme, dentro de Explorar.
+
+## ACARS e CPDLC (aba Aviação)
+
+Painel **ACARS · CPDLC**: decodifica **vários canais ACARS ao mesmo tempo**
+(131,550 / 131,725 / 131,825 / 131,450 / 131,125 / 130,025 MHz por padrão; clique
+num canal para ligar/desligar, botão direito para remover, campo para incluir).
+
+- **Iniciar ACARS** centraliza a faixa recebida nos canais ligados (se precisar) e
+  põe o Rádio no 131,550 para você ouvir as rajadas. Com o RTL-SDR em 2,4 MS/s
+  todos os canais cabem de uma vez.
+- Bolinha do canal: verde = rajada agora; azul = ouvindo; vermelho = fora da faixa
+  sintonizada; cinza = desligado.
+- Demodulação **coerente de MSK** e correção de erros por paridade + CRC
+  (testado com sinal sintético: 100% das mensagens a partir de ~12 dB de SNR).
+- **CPDLC e ADS-C (FANS-1/A)** são decodificados pela biblioteca libacars
+  (MIT, embutida): autorizações do controle, pedidos do piloto, posição/altitude/
+  velocidade dos relatórios ADS-C. Aparece um resumo em português e os detalhes.
+- **Abrir janela**: lista grande com filtro por matrícula/voo/label/texto, "só
+  CPDLC/ADS-C" e "ocultar sinais de vida".
+- Tudo fica gravado em `acars_log.txt` na pasta do programa (pode desligar).
+
+Observação: CPDLC por **VDL modo 2** (136,975 MHz e vizinhos, 31,5 kbit/s D8PSK)
+é outro sistema e ainda não está incluído; ACARS clássico (o deste painel) é o
+mais comum na banda e também carrega CPDLC FANS-1/A.
 
 ### Bugs do original corrigidos
 
@@ -49,6 +91,8 @@ continuam no menu Theme, dentro de Explorar.
 - O comando `add_bookmark` gravava o modo errado para modos de plugin (DSD).
 - O tema escolhido só era aplicado ao trocar no menu; ao abrir o programa
   voltava para as cores padrão do ImGui.
+- O ADS-B fechava o programa ao ser iniciado pela segunda vez (o bloco de
+  processamento era inicializado de novo).
 
 ## Compilar (Linux)
 

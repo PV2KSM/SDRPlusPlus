@@ -18,6 +18,7 @@ namespace workspaces {
     void drawStatusBar();                         // barra de status embaixo da cascata
     float statusBarHeight();
     bool isMenuVisible(const std::string& name);  // filtro do menu lateral
+    std::string displayName(const std::string& name); // título em português do painel
     Workspace current();
     void switchTo(Workspace ws);
 }

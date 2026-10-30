@@ -143,7 +143,7 @@ bool Menu::draw(bool updateStates) {
         // Draw menu header and menu content. There is a lot of boilerplate because the checkbox has to be drawn before the menu, TODO: fix
         if (updateStates) { ImGui::SetNextItemOpen(opt.open); }
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
-        headerOpen = CollapsingHeader((opt.name + "##sdrpp_main_menu").c_str());
+        headerOpen = CollapsingHeader((workspaces::displayName(opt.name) + "###sdrpp_main_menu_" + opt.name).c_str());
         ImGui::PopStyleVar();
         ImGui::PopStyleColor(3);
         if (headerOpen) {
