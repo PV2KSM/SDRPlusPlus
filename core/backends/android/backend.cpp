@@ -82,6 +82,19 @@ namespace backend {
     }
 
 
+    void openUrl(const std::string& url) {
+        JavaVM* java_vm = app->activity->vm;
+        JNIEnv* java_env = NULL;
+        if (java_vm->AttachCurrentThread(&java_env, NULL) != JNI_OK) { return; }
+        jclass cls = java_env->GetObjectClass(app->activity->clazz);
+        jmethodID m = java_env->GetMethodID(cls, "openUrl", "(Ljava/lang/String;)V");
+        if (m) {
+            jstring s = java_env->NewStringUTF(url.c_str());
+            java_env->CallVoidMethod(app->activity->clazz, m, s);
+            java_env->DeleteLocalRef(s);
+        }
+    }
+
     void androidHapticFeedback() {
         JavaVM* java_vm = app->activity->vm;
         JNIEnv* java_env = NULL;

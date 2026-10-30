@@ -24,6 +24,7 @@
 #include <gui/menus/vfo_color.h>
 #include <gui/menus/module_manager.h>
 #include <gui/menus/theme.h>
+#include <gui/workspaces.h>
 #include <gui/dialogs/credits.h>
 #include <cstring>
 #include <filesystem>
@@ -728,6 +729,7 @@ void MainWindow::draw() {
 
         ImGui::BeginChild("Left Column");
 
+        workspaces::drawTabs();
 
         if (gui::menu.draw(firstMenuRender)) {
             core::configManager.acquire();

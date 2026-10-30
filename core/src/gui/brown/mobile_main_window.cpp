@@ -31,6 +31,7 @@
 #include <cmath>
 #include <utils/usleep.h>
 #include "audio_player.h"
+#include <gui/workspaces.h>
 #include "imgui-notify/imgui_notify.h"
 
 using namespace ::dsp::arrays;
@@ -1794,6 +1795,8 @@ void MobileMainWindow::draw() {
         rectRegion.y += 10000; // menu is scrolling, rect somehow scrolls with it, so must be big enough to be always visible
         window->DrawList->AddRectFilled(widgetPos, widgetPos + rectRegion, bg);
 
+
+        workspaces::drawTabs();
 
         if (gui::menu.draw(firstMenuRender)) {
             core::configManager.acquire();

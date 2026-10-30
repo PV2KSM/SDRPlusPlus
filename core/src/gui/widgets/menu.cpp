@@ -4,6 +4,7 @@
 #include <gui/style.h>
 #include "gui/menus/display.h"
 #include <core.h>
+#include <gui/workspaces.h>
 
 Menu::Menu() {
 }
@@ -50,6 +51,9 @@ bool Menu::draw(bool updateStates) {
     for (MenuOption_t& opt : order) {
         rawId++;
         if (items.find(opt.name) == items.end()) {
+            continue;
+        }
+        if (!workspaces::isMenuVisible(opt.name)) {
             continue;
         }
         if (opt.name == draggedMenuName) {

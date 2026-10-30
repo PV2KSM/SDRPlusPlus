@@ -23,6 +23,9 @@
 #ifdef _WIN32
 #include <shellapi.h>
 #endif
+#ifdef __ANDROID__
+namespace backend { void openUrl(const std::string& url); }   // core/backends/android
+#endif
 
 SDRPP_MOD_INFO{
     /* Name:            */ "adsb_decoder",
@@ -43,7 +46,9 @@ static double nowSec() {
 }
 
 static void openUrl(const std::string& url) {
-#if defined(_WIN32)
+#if defined(__ANDROID__)
+    backend::openUrl(url);
+#elif defined(_WIN32)
     ShellExecuteA(NULL, "open", url.c_str(), NULL, NULL, SW_SHOWNORMAL);
 #elif defined(__APPLE__)
     std::string cmd = "open '" + url + "' >/dev/null 2>&1 &";
@@ -219,6 +224,8 @@ private:
         if (running || !enabled) { return; }
         stopScannerIfRunning();   // um RTL-SDR só: o scanner da banda aérea não pode mexer na sintonia
         prevCenter = gui::waterfall.getCenterFrequency();
+        // Guarda a frequência do rádio (não só o centro da tela) para voltar exatamente nela
+        prevRadioFreq = sigpath::vfoManager.vfoExists("Radio") ? prevCenter + sigpath::vfoManager.getOffset("Radio") : 0;
         vfo = sigpath::vfoManager.createVFO(name, ImGui::WaterfallVFO::REF_CENTER, 0, ADSB_SR, ADSB_SR, ADSB_SR, ADSB_SR, true);
         if (!vfo) { return; }
         demod.reset();
@@ -236,7 +243,8 @@ private:
         sink.stop();
         sigpath::vfoManager.deleteVFO(vfo);
         vfo = NULL;
-        if (prevCenter > 0) { tuner::tune(tuner::TUNER_MODE_CENTER, "", prevCenter); }
+        if (prevRadioFreq > 0 && sigpath::vfoManager.vfoExists("Radio")) { tuner::tune(tuner::TUNER_MODE_NORMAL, "Radio", prevRadioFreq); }
+        else if (prevCenter > 0) { tuner::tune(tuner::TUNER_MODE_CENTER, "", prevCenter); }
         flog::info("ADS-B: parado");
     }
 
@@ -407,7 +415,7 @@ private:
         }
         else {
             char lbl[96];
-            snprintf(lbl, sizeof(lbl), "Parar ADS-B e voltar para %.3f MHz##adsb_stop", _this->prevCenter / 1e6);
+            snprintf(lbl, sizeof(lbl), "Parar ADS-B e voltar para %.3f MHz##adsb_stop", (_this->prevRadioFreq > 0 ? _this->prevRadioFreq : _this->prevCenter) / 1e6);
             if (ImGui::Button(lbl, ImVec2(w, 0))) { _this->stopAdsb(); }
         }
 
@@ -560,6 +568,7 @@ private:
     MapServer server;
     double lastExpire = 0;
     double prevCenter = 0;
+    double prevRadioFreq = 0;
 
     // Config
     bool useGrid = true;

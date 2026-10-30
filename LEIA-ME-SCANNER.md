@@ -24,6 +24,22 @@
 - **Layout:** Frequency Manager (listas + scanner) e ADS-B logo abaixo do Radio;
   o resto começa fechado (vale para configuração nova).
 
+## Abas: Aviação, Radioamador, Explorar
+
+No topo do painel lateral ficam três abas. Cada uma mostra só os painéis do seu
+uso e **lembra a própria sintonia** (frequência, modo, largura) e a **própria lista
+de canais** do scanner:
+
+- **Aviação:** Source, Radio, listas/scanner, ADS-B, gravador, redução de ruído.
+  Começa em 118,100 MHz AM.
+- **Radioamador:** Source, Radio, listas/scanner, plano de bandas, FT8, varredura
+  de faixa, gravador. Começa em 145,000 MHz NFM.
+- **Explorar:** tudo liberado, como o SDR++ original.
+
+Ao trocar de aba, o scanner e o ADS-B param (o RTL-SDR tem um sintonizador só).
+O tema novo **Simples** (escuro, cantos arredondados) é o padrão; os temas antigos
+continuam no menu Theme, dentro de Explorar.
+
 ### Bugs do original corrigidos
 
 - Canais salvos em modo **DSD perdiam o modo ao reiniciar** (viravam "não
@@ -31,6 +47,8 @@
 - O scanner nunca saía do primeiro canal: a configuração padrão vinha com base
   de ruído **-120 dB** num campo que mede SNR (0–40 dB).
 - O comando `add_bookmark` gravava o modo errado para modos de plugin (DSD).
+- O tema escolhido só era aplicado ao trocar no menu; ao abrir o programa
+  voltava para as cores padrão do ImGui.
 
 ## Compilar (Linux)
 

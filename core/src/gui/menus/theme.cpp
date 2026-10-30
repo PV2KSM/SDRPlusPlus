@@ -53,6 +53,12 @@ namespace thememenu {
         }
         core::configManager.release();
 
+        // Aplica o tema salvo ao abrir (antes só era aplicado ao trocar no menu)
+        if (themeNames[themeId] == "ImGUI Dark") { ImGui::StyleColorsDark(); }
+        else if (themeNames[themeId] == "ImGUI Light") { ImGui::StyleColorsLight(); }
+        else if (themeNames[themeId] == "ImGUI Classic") { ImGui::StyleColorsClassic(); }
+        else { gui::themeManager.applyTheme(themeNames[themeId]); }
+
         // Load saved style if exists
         loadStyle();
 

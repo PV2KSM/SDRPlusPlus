@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <fstream>
 #include "utils/wstr.h"
+#include <gui/style.h>
+#include <map>
 
 bool ThemeManager::loadThemesFromDir(std::string path) {
     // // TEST JUST TO DUMP THE ORIGINAL THEME
@@ -36,6 +38,27 @@ bool ThemeManager::loadThemesFromDir(std::string path) {
         loadTheme(_path);
     }
     return true;
+}
+
+// Medidas de estilo opcionais no tema (valores em texto, ex.: "FrameRounding": "6")
+static const std::map<std::string, float ImGuiStyle::*> THEME_STYLE_FLOATS = {
+    { "WindowRounding", &ImGuiStyle::WindowRounding },
+    { "ChildRounding", &ImGuiStyle::ChildRounding },
+    { "FrameRounding", &ImGuiStyle::FrameRounding },
+    { "GrabRounding", &ImGuiStyle::GrabRounding },
+    { "PopupRounding", &ImGuiStyle::PopupRounding },
+    { "ScrollbarRounding", &ImGuiStyle::ScrollbarRounding },
+    { "TabRounding", &ImGuiStyle::TabRounding },
+    { "FrameBorderSize", &ImGuiStyle::FrameBorderSize },
+};
+
+static bool parseStyleFloat(const std::string& val, float& out) {
+    try {
+        size_t used = 0;
+        out = std::stof(val, &used);
+        return used == val.size() && out >= 0.0f && out <= 32.0f;
+    }
+    catch (...) { return false; }
 }
 
 bool ThemeManager::loadTheme(std::string path) {
@@ -90,6 +113,15 @@ bool ThemeManager::loadTheme(std::string path) {
         if (param == "WaterfallBackground" || param == "ClearColor" || param == "FFTHoldColor") {
             if (val[0] != '#' || !std::all_of(val.begin() + 1, val.end(), ::isxdigit) || val.length() != 9) {
                 flog::error("Theme {0} contains invalid {1} field. Expected hex RGBA color", path, param);
+                return false;
+            }
+            continue;
+        }
+
+        if (THEME_STYLE_FLOATS.find(param) != THEME_STYLE_FLOATS.end()) {
+            float f;
+            if (!parseStyleFloat(val, f)) {
+                flog::error("Theme {0} contains invalid {1} field. Expected a number from 0 to 32", path, param);
                 return false;
             }
             continue;
@@ -161,6 +193,13 @@ bool ThemeManager::applyTheme(std::string name) {
         if (param == "FFTHoldColor") {
             decodeRGBA(val, ret);
             fftHoldColor = ImVec4((float)ret[0] / 255.0f, (float)ret[1] / 255.0f, (float)ret[2] / 255.0f, (float)ret[3] / 255.0f);
+            continue;
+        }
+
+        auto sf = THEME_STYLE_FLOATS.find(param);
+        if (sf != THEME_STYLE_FLOATS.end()) {
+            float f;
+            if (parseStyleFloat(val, f)) { style.*(sf->second) = f; }   // a escala da tela é aplicada depois
             continue;
         }
 

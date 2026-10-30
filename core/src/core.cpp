@@ -565,7 +565,7 @@ int sdrpp_main(int argc, char* argv[]) {
     defConfig["max"] = 0.0;
     defConfig["maximized"] = false;
     defConfig["fullscreen"] = false;
-    defConfig["theme"] = "Dark";
+    defConfig["theme"] = "Simples";
 
     // Menu
     defConfig["menuElements"] = json::array();

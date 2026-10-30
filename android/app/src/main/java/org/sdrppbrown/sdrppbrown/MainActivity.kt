@@ -409,6 +409,17 @@ class MainActivity : NativeActivity(), SensorEventListener {
         }
     }
 
+    // Abre um endereço no navegador do celular (mapa do ADS-B)
+    public fun openUrl(url: String) {
+        runOnUiThread {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+            } catch (e: Exception) {
+                Log.w("SDR++", "openUrl: " + e.toString())
+            }
+        }
+    }
+
     public fun httpGet(url: String): String {
         var response = ""
         var connection : HttpURLConnection? = null
