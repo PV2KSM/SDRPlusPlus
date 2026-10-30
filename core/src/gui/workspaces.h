@@ -13,7 +13,10 @@ namespace workspaces {
     };
 
     void init();                                  // lê a aba salva (chamar depois do config)
-    void drawTabs();                              // barra de abas, no topo do painel lateral
+    void drawTabs();                              // abas sozinhas (painel lateral do celular)
+    void drawControlBar(bool compact = false);    // faixa de controle: abas, modos, largura e squelch
+    void drawStatusBar();                         // barra de status embaixo da cascata
+    float statusBarHeight();
     bool isMenuVisible(const std::string& name);  // filtro do menu lateral
     Workspace current();
     void switchTo(Workspace ws);

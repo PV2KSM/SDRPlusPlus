@@ -205,7 +205,8 @@ public:
         }
         if (cmd == "get_stats") {
             return "{\"preambles\":" + std::to_string(demod.preambles) + ",\"accepted\":" + std::to_string(demod.accepted) +
-                   ",\"rejected\":" + std::to_string(demod.rejected) + ",\"running\":" + (running ? "true" : "false") + "}";
+                   ",\"rejected\":" + std::to_string(demod.rejected) + ",\"running\":" + (running ? "true" : "false") +
+                   ",\"aircraft\":" + std::to_string(db.snapshot().size()) + "}";
         }
         return "{}";
     }
@@ -229,7 +230,14 @@ private:
         vfo = sigpath::vfoManager.createVFO(name, ImGui::WaterfallVFO::REF_CENTER, 0, ADSB_SR, ADSB_SR, ADSB_SR, ADSB_SR, true);
         if (!vfo) { return; }
         demod.reset();
-        sink.init(vfo->output, dataHandler, this);
+        // O bloco só pode ser inicializado uma vez: nas vezes seguintes troca a entrada
+        if (!sinkReady) {
+            sink.init(vfo->output, dataHandler, this);
+            sinkReady = true;
+        }
+        else {
+            sink.setInput(vfo->output);
+        }
         sink.start();
         tuner::tune(tuner::TUNER_MODE_CENTER, name, ADSB_FREQ);
         running = true;
@@ -569,6 +577,7 @@ private:
     double lastExpire = 0;
     double prevCenter = 0;
     double prevRadioFreq = 0;
+    bool sinkReady = false;
 
     // Config
     bool useGrid = true;

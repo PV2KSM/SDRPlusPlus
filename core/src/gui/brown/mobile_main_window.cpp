@@ -1797,6 +1797,8 @@ void MobileMainWindow::draw() {
 
 
         workspaces::drawTabs();
+        workspaces::drawControlBar(true);
+        ImGui::Spacing();
 
         if (gui::menu.draw(firstMenuRender)) {
             core::configManager.acquire();

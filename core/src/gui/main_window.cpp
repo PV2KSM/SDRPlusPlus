@@ -729,8 +729,6 @@ void MainWindow::draw() {
 
         ImGui::BeginChild("Left Column");
 
-        workspaces::drawTabs();
-
         if (gui::menu.draw(firstMenuRender)) {
             core::configManager.acquire();
             json arr = json::array();
@@ -775,11 +773,13 @@ void MainWindow::draw() {
 
     this->displayVariousWindows();
 
+    workspaces::drawControlBar();
 
     ImVec2 wfSize = ImVec2(0, 0);
     if (!bottomWindows.empty()) {
         wfSize.y -= bottomWindows[0].size.y;
     }
+    wfSize.y -= workspaces::statusBarHeight() + ImGui::GetStyle().ItemSpacing.y;
     ImGui::BeginChild("Waterfall", wfSize);
 
     gui::waterfall.draw();
@@ -788,6 +788,11 @@ void MainWindow::draw() {
     ImGui::EndChild();
 
     this->handleWaterfallInput(vfo);
+
+    if (!bottomWindows.empty()) {
+        ImGui::Dummy(ImVec2(0, bottomWindows[0].size.y));
+    }
+    workspaces::drawStatusBar();
 
     ImGui::NextColumn();
     ImGui::BeginChild("WaterfallControls");

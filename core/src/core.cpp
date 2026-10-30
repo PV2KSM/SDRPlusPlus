@@ -603,20 +603,23 @@ int sdrpp_main(int argc, char* argv[]) {
     defConfig["menuElements"][3]["name"] = "ADS-B";
     defConfig["menuElements"][3]["open"] = false;
 
-    defConfig["menuElements"][4]["name"] = "Sinks";
+    defConfig["menuElements"][4]["name"] = "ACARS";
     defConfig["menuElements"][4]["open"] = false;
 
-    defConfig["menuElements"][5]["name"] = "Recorder";
+    defConfig["menuElements"][5]["name"] = "Sinks";
     defConfig["menuElements"][5]["open"] = false;
 
-    defConfig["menuElements"][6]["name"] = "VFO Color";
+    defConfig["menuElements"][6]["name"] = "Recorder";
     defConfig["menuElements"][6]["open"] = false;
 
-    defConfig["menuElements"][7]["name"] = "Band Plan";
+    defConfig["menuElements"][7]["name"] = "VFO Color";
     defConfig["menuElements"][7]["open"] = false;
 
-    defConfig["menuElements"][8]["name"] = "Display";
+    defConfig["menuElements"][8]["name"] = "Band Plan";
     defConfig["menuElements"][8]["open"] = false;
+
+    defConfig["menuElements"][9]["name"] = "Display";
+    defConfig["menuElements"][9]["open"] = false;
 
 #ifdef __ANDROID__
     defConfig["menuWidth"] = 700;
@@ -701,6 +704,8 @@ int sdrpp_main(int argc, char* argv[]) {
     defConfig["moduleInstances"]["VHF Digital Modes"]["enabled"] = true;
     defConfig["moduleInstances"]["ADS-B"]["module"] = "adsb_decoder";
     defConfig["moduleInstances"]["ADS-B"]["enabled"] = true;
+    defConfig["moduleInstances"]["ACARS"]["module"] = "acars_decoder";
+    defConfig["moduleInstances"]["ACARS"]["enabled"] = true;
     defConfig["moduleInstances"]["TETRA Demodulator"]["module"] = "ch_tetra_demodulator";
     defConfig["moduleInstances"]["TETRA Demodulator"]["enabled"] = false;
     // defConfig["moduleInstances"]["Rigctl Client"] = "rigctl_client";
@@ -818,6 +823,8 @@ int sdrpp_main(int argc, char* argv[]) {
     core::configManager.conf["modules"][modCount++] = "noise_reduction_logmmse.so";
     core::configManager.conf["modules"][modCount++] = "ft8_decoder.so";
     core::configManager.conf["modules"][modCount++] = "ch_extravhf_decoder.so";
+    core::configManager.conf["modules"][modCount++] = "adsb_decoder.so";
+    core::configManager.conf["modules"][modCount++] = "acars_decoder.so";
     core::configManager.conf["modules"][modCount++] = "ch_tetra_demodulator.so";
     core::configManager.conf["modules"][modCount++] = "reports_monitor.so";
 #endif
@@ -838,6 +845,13 @@ int sdrpp_main(int argc, char* argv[]) {
         newMod["module"] = mod;
         newMod["enabled"] = true;
         core::configManager.conf["moduleInstances"][_name] = newMod;
+    }
+
+    // Configurações antigas: cria as instâncias dos módulos novos (ADS-B, ACARS)
+    for (const char* inst : { "ADS-B", "ACARS" }) {
+        if (!core::configManager.conf["moduleInstances"].contains(inst)) {
+            core::configManager.conf["moduleInstances"][inst] = defConfig["moduleInstances"][inst];
+        }
     }
 
     // Load UI scaling

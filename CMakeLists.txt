@@ -62,6 +62,7 @@ option(OPT_BUILD_PORTAUDIO_SINK "Build PortAudio Sink Module (Dependencies: port
 
 # Decoders
 option(OPT_BUILD_ADSB_DECODER "ADS-B (1090 MHz) decoder with radar and web map" ON)
+option(OPT_BUILD_ACARS_DECODER "ACARS decoder with CPDLC/ADS-C (libacars)" ON)
 option(OPT_BUILD_ATV_DECODER "Build ATV decoder (no dependencies required)" ON)
 option(OPT_BUILD_DAB_DECODER "Build the DAB/DAB+ decoder (no dependencies required)" OFF)
 option(OPT_BUILD_FALCON9_DECODER "Build the falcon9 live decoder (Dependencies: ffplay)" OFF)
@@ -378,6 +379,10 @@ endif (OPT_BUILD_RADIO)
 if (OPT_BUILD_ADSB_DECODER)
 add_subdirectory("decoder_modules/adsb_decoder")
 endif (OPT_BUILD_ADSB_DECODER)
+
+if (OPT_BUILD_ACARS_DECODER)
+add_subdirectory("decoder_modules/acars_decoder")
+endif (OPT_BUILD_ACARS_DECODER)
 
 if (OPT_BUILD_RYFI_DECODER)
 add_subdirectory("decoder_modules/ryfi_decoder")
