@@ -98,7 +98,7 @@ jobs:
       working-directory: ${{ runner.workspace }}/build
       run: |
         $ErrorActionPreference = 'Continue'
-        cmake --build . --config RelWithDebInfo -- /m /v:minimal 2>&1 | Tee-Object -FilePath "$env:LOGS/5-build.log"
+        cmake --build . --config RelWithDebInfo -- /m /v:minimal "/clp:ErrorsOnly;Summary" "/flp:logfile=$env:LOGS/5-build-completo.txt;verbosity=minimal" 2>&1 | Tee-Object -FilePath "$env:LOGS/5-build.log"
         if ($LASTEXITCODE -ne 0) { exit 1 }
 
     - name: 6 - Montar pacote
@@ -153,5 +153,10 @@ jobs:
         $lines = Get-Content $last.FullName
         $errs = $lines | Select-String -Pattern ': (fatal )?error [A-Z]+\d+|error LNK\d+|CMake Error|unresolved external|Cannot open|throw|falhou|faltando' | ForEach-Object { $_.Line.Trim() } | Select-Object -Unique | Select-Object -First 30
         if ($errs) { Write-Host ("::error title=$($last.Name) - linhas com erro::" + (Enc (($errs | ForEach-Object { $_.Substring(0, [Math]::Min(300, $_.Length)) }) -join "`n"))) }
-        $tail = $lines | Select-Object -Last 60 | ForEach-Object { $_.Substring(0, [Math]::Min(300, $_.Length)) }
-        Write-Host ("::error title=$($last.Name) - final do log::" + (Enc ($tail -join "`n")))
+        $tail = $lines | Where-Object { $_ -notmatch 'warning C\d+|template instantiation|see reference|while compiling|compiling source|^\s*(with|\[|\]|T=)' -and $_.Trim() } | Select-Object -Last 40 | ForEach-Object { $_.Substring(0, [Math]::Min(250, $_.Length)) }
+        $chunk = @(); $n = 0
+        foreach ($l in $tail) {
+          $chunk += $l
+          if ((($chunk -join "`n").Length) -gt 3000) { $n++; Write-Host ("::error title=$($last.Name) - final $n::" + (Enc ($chunk -join "`n"))); $chunk = @() }
+        }
+        if ($chunk.Count) { $n++; Write-Host ("::error title=$($last.Name) - final $n::" + (Enc ($chunk -join "`n"))) }
