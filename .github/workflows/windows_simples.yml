@@ -9,6 +9,9 @@ on:
     branches: [ master, scanner-simples ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   windows:
     runs-on: windows-2022
@@ -147,6 +150,19 @@ jobs:
       with:
         name: sdrpp_simples_windows_x64
         path: ${{ runner.workspace }}/sdrpp_simples_windows_x64.zip
+
+    - name: Publicar na pagina de Releases (simples)
+      if: github.ref == 'refs/heads/master'
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh release view simples -R ${{ github.repository }} *> $null
+        if ($LASTEXITCODE -ne 0) {
+          gh release create simples -R ${{ github.repository }} --target ${{ github.sha }} --title "SDR++ Simples (versao mais recente)" --notes "Downloads atualizados automaticamente. Windows: sdrpp_simples_windows_x64.zip (descompacte e abra o sdrpp.exe). Android: sdrpp_simples_android.apk."
+        }
+        gh release upload simples "${{ runner.workspace }}/sdrpp_simples_windows_x64.zip" -R ${{ github.repository }} --clobber
+        if ($LASTEXITCODE -ne 0) { exit 1 }
 
     - name: Relatar erro (anotacoes)
       if: failure()

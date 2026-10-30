@@ -11,6 +11,9 @@ env:
     BUILD_TYPE: Release
     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+permissions:
+    contents: write
+
 jobs:
 
     build_windows:
@@ -884,9 +887,13 @@ jobs:
               name: sdrpp_android
               path: ${{runner.workspace}}/sdrpp.apk
 
-        - name: Update Nightly
+        - name: Publicar APK na pagina de Releases (simples)
           if: github.ref == 'refs/heads/master'
-          run:  gh release upload rolling ${{runner.workspace}}/sdrpp.apk -R ${{github.repository}} --clobber
+          working-directory: ${{runner.workspace}}
+          run: |
+            cp sdrpp.apk sdrpp_simples_android.apk
+            gh release view simples -R ${{github.repository}} >/dev/null 2>&1 || gh release create simples -R ${{github.repository}} --target ${{github.sha}} --title "SDR++ Simples (versao mais recente)" --notes "Downloads atualizados automaticamente. Windows: sdrpp_simples_windows_x64.zip (descompacte e abra o sdrpp.exe). Android: sdrpp_simples_android.apk."
+            gh release upload simples sdrpp_simples_android.apk -R ${{github.repository}} --clobber
 
 
     check_spelling:
