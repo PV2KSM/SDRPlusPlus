@@ -64,3 +64,4 @@ tools/
 # Editor/compiler caches
 .cache/
 .tempdir/
+build-enxuta/
