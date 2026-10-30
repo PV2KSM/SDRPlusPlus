@@ -420,7 +420,7 @@ namespace workspaces {
         ImGuiStyle& st = ImGui::GetStyle();
         ImVec2 ts = ImGui::CalcTextSize(label.c_str());
         float h = chipH();
-        float w = std::max(ts.x + st.FramePadding.x * 2.6f, minW);
+        float w = (std::max)(ts.x + st.FramePadding.x * 2.6f, minW);
         ImVec2 a = ImGui::GetCursorScreenPos();
         bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
         bool hovered = ImGui::IsItemHovered();
@@ -627,7 +627,7 @@ namespace workspaces {
         flowRight = p0.x + fullW - padX;
 
         if (!compact) {
-            float tabsW = std::min(innerW, 300.0f * style::uiScale);
+            float tabsW = (std::min)(innerW, 300.0f * style::uiScale);
             drawSegmentTabs(tabsW, chipH() + 6.0f * style::uiScale);
         }
         drawModeAndBandwidth(compact);

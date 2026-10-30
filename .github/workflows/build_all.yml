@@ -875,7 +875,16 @@ jobs:
           run: docker build --progress=plain -t android-sdr-kit .
 
         - name: Build
-          run: docker run --name build -v $GITHUB_WORKSPACE:/root/SDRPlusPlus android-sdr-kit /bin/bash -l -c "apt-get update && apt-get install -y unzip && cd /root/SDRPlusPlus/android && gradle -PsdrKitRoot=/sdr-kit --info assembleDebug"
+          run: |
+            set -o pipefail
+            docker run --name build -v $GITHUB_WORKSPACE:/root/SDRPlusPlus android-sdr-kit /bin/bash -l -c "apt-get update && apt-get install -y unzip && cd /root/SDRPlusPlus/android && gradle -PsdrKitRoot=/sdr-kit --info assembleDebug" 2>&1 | tee ${{runner.workspace}}/android_build.log
+
+        - name: Erros da compilacao Android (anotacoes)
+          if: failure()
+          run: |
+            L=${{runner.workspace}}/android_build.log
+            grep -E "error:|Error:|CMake Error|FAILED|undefined reference|fatal" "$L" | grep -v "^\s*$" | head -40 | while IFS= read -r line; do echo "::error::${line:0:900}"; done
+            tail -25 "$L" | while IFS= read -r line; do echo "::warning::${line:0:900}"; done
 
         - name: Recover APK
           working-directory: ${{runner.workspace}}

@@ -294,8 +294,8 @@ private:
         double lo = 1e12, hi = 0;
         for (auto& c : channels) {
             if (!c->enabled) { continue; }
-            lo = std::min(lo, c->freq);
-            hi = std::max(hi, c->freq);
+            lo = (std::min)(lo, c->freq);
+            hi = (std::max)(hi, c->freq);
         }
         if (hi > 0) {
             double center = gui::waterfall.getCenterFrequency();

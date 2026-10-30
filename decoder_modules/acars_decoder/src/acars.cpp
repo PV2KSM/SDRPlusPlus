@@ -217,7 +217,7 @@ namespace acars {
         std::vector<float> pref(n + 1, 0);
         for (int i = 0; i < n; i++) { pref[i + 1] = pref[i] + env[i]; }
         for (int i = 0; i < n; i++) {
-            int a = std::max(0, i - MA / 2), b = std::min(n, i + MA / 2);
+            int a = (std::max)(0, i - MA / 2), b = (std::min)(n, i + MA / 2);
             float mean = (pref[b] - pref[a]) / (float)(b - a);
             audio[i] = env[i] - mean;
         }
@@ -258,7 +258,7 @@ namespace acars {
                 default: data[k] = (t != prev); break;
                 }
                 // confiabilidade do bit de dado (no diferencial depende dos dois tons)
-                rel[k] = (conv < 2 || k == 0) ? soft[k] : std::min(soft[k], soft[k - 1]);
+                rel[k] = (conv < 2 || k == 0) ? soft[k] : (std::min)(soft[k], soft[k - 1]);
             }
             uint32_t reg = 0;
             for (int k = 0; k < nbits; k++) {
@@ -347,7 +347,7 @@ namespace acars {
                             uint8_t ck = x[k] > 0, cn = x[k + 1] > 0;
                             uint8_t p = pat ? ((k >> 1) & 1) : (k & 1);
                             tones[k] = (uint8_t)((ck != cn) ^ p);
-                            soft[k] = std::min(std::fabs(x[k]), std::fabs(x[k + 1]));
+                            soft[k] = (std::min)(std::fabs(x[k]), std::fabs(x[k + 1]));
                         }
                         if (tryTones(tones, soft, out)) { return true; }
                     }
@@ -473,7 +473,7 @@ namespace acars {
             }
             else {
                 buf.insert(buf.end(), win.begin(), win.end());
-                peakPow = std::max(peakPow, pw);
+                peakPow = (std::max)(peakPow, pw);
                 if (pw < floorPow * 2.5f) {
                     if (++quiet >= 4) { endBurst(); loud = 0; }
                 }
