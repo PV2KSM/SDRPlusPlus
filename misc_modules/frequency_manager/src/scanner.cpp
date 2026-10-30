@@ -521,20 +521,32 @@ void Scanner::render() {
 
     // Status
     if (scanning) {
-        char freqBuf[32];
-        snprintf(freqBuf, sizeof(freqBuf), "%.4f MHz", currentBookmark.frequency / 1e6);
-        const char* tag = onPriority ? " [P]" : "";
+        char sub[96];
+        snprintf(sub, sizeof(sub), "%.4f MHz%s", currentBookmark.frequency / 1e6, onPriority ? "  ·  prioritário" : "");
+        // Caixa de status (altura fixa: o painel não pula ao mudar de estado)
+        auto statusBox = [&](const char* label, ImU32 labelCol, ImU32 bg, ImU32 border) {
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            ImVec2 p0 = ImGui::GetCursorScreenPos();
+            float lh = ImGui::GetTextLineHeight();
+            float pad = 8.0f * style::uiScale;
+            float h = lh * 3.0f + pad * 2.0f;
+            ImVec2 p1(p0.x + ImGui::GetContentRegionAvail().x, p0.y + h);
+            float r = ImGui::GetStyle().FrameRounding;
+            dl->AddRectFilled(p0, p1, bg, r);
+            dl->AddRect(p0, p1, border, r, 0, style::uiScale);
+            dl->AddText(ImVec2(p0.x + pad, p0.y + pad), labelCol, label);
+            dl->AddText(ImVec2(p0.x + pad, p0.y + pad + lh), ImGui::GetColorU32(ImGuiCol_Text), currentStation.c_str());
+            dl->AddText(ImVec2(p0.x + pad, p0.y + pad + lh * 2.0f), ImGui::GetColorU32(ImGuiCol_TextDisabled), sub);
+            ImGui::Dummy(ImVec2(p1.x - p0.x, h));
+        };
         if (state == State::RECEIVE) {
-            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "%s %s%s  %s",
-                               hold ? "SEGURANDO" : "RECEBENDO", currentStation.c_str(), tag, freqBuf);
+            statusBox(hold ? "SEGURANDO · RECEBENDO" : "RECEBENDO", IM_COL32(245, 176, 65, 255), IM_COL32(42, 33, 18, 255), IM_COL32(92, 68, 25, 255));
         }
         else if (hold) {
-            ImGui::TextColored(ImVec4(0.3f, 0.8f, 1.0f, 1.0f), "SEGURANDO %s%s  %s (aguardando)",
-                               currentStation.c_str(), tag, freqBuf);
+            statusBox("SEGURANDO · aguardando", IM_COL32(76, 194, 255, 255), IM_COL32(17, 34, 48, 255), IM_COL32(36, 64, 90, 255));
         }
         else {
-            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Procurando... %s%s  %s",
-                               currentStation.c_str(), tag, freqBuf);
+            statusBox("PROCURANDO", ImGui::GetColorU32(ImGuiCol_TextDisabled), ImGui::GetColorU32(ImGuiCol_WindowBg), ImGui::GetColorU32(ImGuiCol_Border));
         }
         if (currentIsDsd) {
             if (lastDsd.available) {

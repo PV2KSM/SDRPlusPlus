@@ -41,7 +41,9 @@ bool Menu::draw(bool updateStates) {
     bool changed = false;
     float menuWidth = ImGui::GetContentRegionAvail().x;
     ImGuiWindow* window = ImGui::GetCurrentWindow();
-    ImVec2 checkboxOffset = ImVec2(menuWidth - ImGui::GetTextLineHeight() - (6.0f * style::uiScale), - ImGui::GetTextLineHeight() - (10.0f * style::uiScale));
+    // Cada painel é desenhado como um cartão (fundo arredondado + borda)
+    const float cardPad = 6.0f * style::uiScale;
+    ImVec2 checkboxOffset = ImVec2(menuWidth - ImGui::GetTextLineHeight() - (6.0f * style::uiScale) - 2.0f * cardPad, - ImGui::GetTextLineHeight() - (10.0f * style::uiScale));
 
     int displayedCount = 0;
     int rawId = 0;
@@ -117,9 +119,34 @@ bool Menu::draw(bool updateStates) {
             ImGui::SetTooltip("Menu Order Locked!");
         }
 
+        // Início do cartão: o conteúdo vai para o canal 1 e o fundo é desenhado
+        // depois no canal 0, quando já sabemos a altura do painel.
+        ImDrawListSplitter cardSplitter;
+        cardSplitter.Split(window->DrawList, 2);
+        cardSplitter.SetCurrentChannel(window->DrawList, 1);
+        ImVec2 cardMin = ImGui::GetCursorScreenPos();
+        window->WorkRect = orginalRect;
+        ImRect cardWork = orginalRect, cardContent = window->ContentRegionRect;
+        window->WorkRect.Max.x -= cardPad;
+        window->ContentRegionRect.Max.x -= cardPad;
+        ImGui::Indent(cardPad);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + cardPad * 0.5f);
+        ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered));
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+        if (item.inst != NULL) {
+            orginalRect = window->WorkRect;
+            window->WorkRect = ImRect(orginalRect.Min, ImVec2(orginalRect.Max.x - ImGui::GetTextLineHeight() - (6.0f * style::uiScale), orginalRect.Max.y));
+        }
+        bool headerOpen;
+
         // Draw menu header and menu content. There is a lot of boilerplate because the checkbox has to be drawn before the menu, TODO: fix
         if (updateStates) { ImGui::SetNextItemOpen(opt.open); }
-        if (CollapsingHeader((opt.name + "##sdrpp_main_menu").c_str())) {
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+        headerOpen = CollapsingHeader((opt.name + "##sdrpp_main_menu").c_str());
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(3);
+        if (headerOpen) {
             if (item.inst != NULL) {
                 window->WorkRect = orginalRect;
                 ImVec2 pos = ImGui::GetCursorPos();
@@ -175,6 +202,19 @@ bool Menu::draw(bool updateStates) {
             opt.open = false;
             changed = true;
         }
+
+        // Fim do cartão
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + cardPad * 0.5f);
+        ImGui::Unindent(cardPad);
+        window->WorkRect = cardWork;
+        window->ContentRegionRect = cardContent;
+        ImVec2 cardMax(cardMin.x + menuWidth, ImGui::GetCursorScreenPos().y - ImGui::GetStyle().ItemSpacing.y + cardPad * 0.5f);
+        cardSplitter.SetCurrentChannel(window->DrawList, 0);
+        float r = ImGui::GetStyle().FrameRounding + 2.0f * style::uiScale;
+        window->DrawList->AddRectFilled(cardMin, cardMax, ImGui::GetColorU32(ImGuiCol_FrameBg), r);
+        window->DrawList->AddRect(cardMin, cardMax, ImGui::GetColorU32(ImGuiCol_Border), r, 0, style::uiScale);
+        cardSplitter.Merge(window->DrawList);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + cardPad);
     }
 
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) && menuClicked) {
