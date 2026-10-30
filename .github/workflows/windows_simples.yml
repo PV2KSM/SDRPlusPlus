@@ -105,36 +105,42 @@ jobs:
       shell: pwsh
       working-directory: ${{ runner.workspace }}
       run: |
-        $ErrorActionPreference = 'Continue'
-        & {
+        Start-Transcript -Path "$env:LOGS/6-pacote.log" -Force | Out-Null
+        try {
           $ErrorActionPreference = 'Stop'
           $out = "sdrpp_simples_windows_x64"
           $b = "${{ runner.workspace }}/build"
+          Write-Host "build dir:"; Get-ChildItem $b | Select-Object Name | Format-Table | Out-String | Write-Host
+          $rel = Get-ChildItem $b -Recurse -Filter sdrpp.exe | Select-Object -First 1
+          if (-not $rel) { throw "sdrpp.exe nao encontrado em $b" }
+          Write-Host "sdrpp.exe em: $($rel.DirectoryName)"
           New-Item -ItemType Directory -Force "$out/modules" | Out-Null
-          Copy-Item -Recurse "$env:GITHUB_WORKSPACE/root/*" $out
-          Copy-Item "$b/RelWithDebInfo/*" $out -Recurse
-          # Módulos: a DLL com o mesmo nome da pasta do módulo
+          Copy-Item -Recurse "$env:GITHUB_WORKSPACE/root/*" $out -Force
+          Copy-Item "$($rel.DirectoryName)/*" $out -Recurse -Force
           foreach ($grp in @('source_modules','sink_modules','decoder_modules','misc_modules')) {
             Get-ChildItem "$b/$grp" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-              $dll = Join-Path $_.FullName ("RelWithDebInfo/" + $_.Name + ".dll")
-              if (Test-Path $dll) { Copy-Item $dll "$out/modules/"; Write-Host "modulo: $($_.Name)" }
+              $dll = Get-ChildItem $_.FullName -Recurse -Filter ($_.Name + ".dll") -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($dll) { Copy-Item $dll.FullName "$out/modules/" -Force; Write-Host "modulo: $($_.Name)" }
             }
           }
-          # Outras DLLs geradas pela compilação (ex.: mbelib do DMR) ficam ao lado do .exe
-          Get-ChildItem $b -Recurse -Filter *.dll | Where-Object { $_.FullName -notmatch '\\(source|sink|decoder|misc)_modules\\[^\\]+\\RelWithDebInfo\\[^\\]+\.dll$' -or $_.Directory.Parent.Name -ne $_.BaseName } |
-            Where-Object { -not (Test-Path (Join-Path "$out/modules" $_.Name)) -and -not (Test-Path (Join-Path $out $_.Name)) } |
-            ForEach-Object { Copy-Item $_.FullName $out; Write-Host "dll extra: $($_.Name)" }
-          # Dependências
-          Copy-Item "C:/vcpkg/installed/x64-windows/bin/*.dll" $out
+          $mods = (Get-ChildItem "$out/modules" -Filter *.dll).BaseName
+          Get-ChildItem $b -Recurse -Filter *.dll | Where-Object { $mods -notcontains $_.BaseName -and -not (Test-Path (Join-Path $out $_.Name)) } |
+            ForEach-Object { Copy-Item $_.FullName $out -Force; Write-Host "dll extra: $($_.Name)" }
+          Copy-Item "C:/vcpkg/installed/x64-windows/bin/*.dll" $out -Force
           foreach ($f in @('volk.dll','rtlsdr.dll','libusb-1.0.dll','pthreadVC2.dll')) {
-            if (Test-Path "C:/Program Files/PothosSDR/bin/$f") { Copy-Item "C:/Program Files/PothosSDR/bin/$f" $out }
+            if (Test-Path "C:/Program Files/PothosSDR/bin/$f") { Copy-Item "C:/Program Files/PothosSDR/bin/$f" $out -Force }
           }
-          Copy-Item "C:/Program Files (x86)/RtAudio/bin/rtaudio.dll" $out
-          if (-not (Test-Path "$out/sdrpp.exe")) { throw "sdrpp.exe nao foi gerado" }
+          $rta = Get-ChildItem "C:/Program Files (x86)/RtAudio", "C:/Program Files/RtAudio" -Recurse -Filter rtaudio.dll -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($rta) { Copy-Item $rta.FullName $out -Force } else { Write-Host "AVISO: rtaudio.dll nao encontrado" }
           Compress-Archive -Path "$out/*" -DestinationPath "$out.zip" -Force
           Get-ChildItem $out, "$out/modules" | Select-Object Name, Length | Format-Table | Out-String | Write-Host
-        } *>&1 | Tee-Object -FilePath "$env:LOGS/6-pacote.log"
-        if (-not $?) { exit 1 }
+        } catch {
+          Write-Host "FALHA: $($_.Exception.Message)"
+          Write-Host $_.InvocationInfo.PositionMessage
+          Stop-Transcript | Out-Null
+          exit 1
+        }
+        Stop-Transcript | Out-Null
 
     - name: Salvar pacote
       uses: actions/upload-artifact@v4
@@ -149,9 +155,11 @@ jobs:
         function Enc([string]$s) { return $s.Replace('%','%25').Replace("`r",'').Replace("`n",'%0A') }
         $logs = Get-ChildItem $env:LOGS -Filter *.log -ErrorAction SilentlyContinue | Sort-Object LastWriteTime
         if (-not $logs) { Write-Host "::error title=sem logs::nenhum log encontrado (falha antes dos passos numerados)"; exit 0 }
-        $last = $logs[-1]
+        $last = $logs | Where-Object { Select-String -Path $_.FullName -Pattern '^FALHA:' -Quiet } | Select-Object -Last 1
+        if (-not $last) { $last = $logs[-1] }
+        Write-Host ("::error title=passos registrados::" + (($logs | ForEach-Object { $_.Name + ' (' + $_.Length + ' bytes)' }) -join ' | '))
         $lines = Get-Content $last.FullName
-        $errs = $lines | Select-String -Pattern ': (fatal )?error [A-Z]+\d+|error LNK\d+|CMake Error|unresolved external|Cannot open|throw|falhou|faltando' | ForEach-Object { $_.Line.Trim() } | Select-Object -Unique | Select-Object -First 30
+        $errs = $lines | Select-String -Pattern ': (fatal )?error [A-Z]+\d+|error LNK\d+|CMake Error|unresolved external|Cannot open|^FALHA:|At line|falhou|faltando' | ForEach-Object { $_.Line.Trim() } | Select-Object -Unique | Select-Object -First 30
         if ($errs) { Write-Host ("::error title=$($last.Name) - linhas com erro::" + (Enc (($errs | ForEach-Object { $_.Substring(0, [Math]::Min(300, $_.Length)) }) -join "`n"))) }
         $tail = $lines | Where-Object { $_ -notmatch 'warning C\d+|template instantiation|see reference|while compiling|compiling source|^\s*(with|\[|\]|T=)' -and $_.Trim() } | Select-Object -Last 40 | ForEach-Object { $_.Substring(0, [Math]::Min(250, $_.Length)) }
         $chunk = @(); $n = 0
