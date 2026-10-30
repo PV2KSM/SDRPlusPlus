@@ -1,0 +1,157 @@
+name: Windows (SDR++ Simples)
+
+# Compilação enxuta para Windows: só o que o projeto usa (RTL-SDR, rádio, DMR,
+# ADS-B, listas/scanner, gravador, redução de ruído). Em caso de falha, as
+# últimas linhas do log do passo que falhou viram anotações de erro.
+
+on:
+  push:
+    branches: [ master, scanner-simples ]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    env:
+      LOGS: ${{ github.workspace }}/../ci-logs
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Preparar pastas
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force $env:LOGS | Out-Null
+        New-Item -ItemType Directory -Force ${{ runner.workspace }}/build | Out-Null
+
+    - name: 1 - PothosSDR (volk, rtlsdr, libusb)
+      shell: pwsh
+      working-directory: ${{ runner.workspace }}
+      run: |
+        $ErrorActionPreference = 'Continue'
+        & {
+          Invoke-WebRequest -Uri "https://downloads.myriadrf.org/builds/PothosSDR/PothosSDR-2020.01.26-vc14-x64.exe" -OutFile pothos.exe
+          New-Item -ItemType Directory -Force "C:/Program Files/PothosSDR" | Out-Null
+          7z x pothos.exe -o"C:/Program Files/PothosSDR/" -y
+          if ($LASTEXITCODE -ne 0) { throw "7z falhou ao extrair o PothosSDR" }
+          Invoke-WebRequest -Uri "https://github.com/libusb/libusb/releases/download/v1.0.23/libusb-1.0.23.7z" -OutFile libusb.7z
+          7z x libusb.7z -olibusb_old -y
+          Copy-Item "libusb_old/MS64/dll/libusb-1.0.dll" "C:/Program Files/PothosSDR/bin/" -Force
+          Copy-Item "libusb_old/MS64/dll/libusb-1.0.lib" "C:/Program Files/PothosSDR/lib/" -Force
+          try {
+            Invoke-WebRequest -Uri "https://ftp.osmocom.org/binaries/windows/rtl-sdr/rtl-sdr-64bit-20261018.zip" -OutFile rtl-sdr.zip
+            7z x rtl-sdr.zip -y
+            Copy-Item "rtl-sdr-64bit-20261018/librtlsdr.dll" "C:/Program Files/PothosSDR/bin/rtlsdr.dll" -Force
+            Write-Host "librtlsdr atualizado (osmocom)"
+          } catch { Write-Host "AVISO: librtlsdr novo indisponivel, usando o do PothosSDR: $_" }
+          foreach ($f in @("bin/volk.dll", "lib/volk.lib", "bin/rtlsdr.dll", "include/rtl-sdr.h")) {
+            if (-not (Test-Path "C:/Program Files/PothosSDR/$f")) { throw "faltando no PothosSDR: $f" }
+          }
+        } *>&1 | Tee-Object -FilePath "$env:LOGS/1-pothos.log"
+        if (-not $?) { exit 1 }
+
+    - name: 2 - vcpkg (fftw3, glfw3, zstd, itpp, libusb)
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Continue'
+        $trip = "C:/vcpkg/triplets/x64-windows.cmake"
+        if (-not (Select-String -Path $trip -Pattern "VCPKG_BUILD_TYPE" -Quiet)) { Add-Content -Path $trip -Value "set(VCPKG_BUILD_TYPE release)" }
+        vcpkg install fftw3:x64-windows glfw3:x64-windows zstd:x64-windows itpp:x64-windows libusb:x64-windows 2>&1 | Tee-Object -FilePath "$env:LOGS/2-vcpkg.log"
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+
+    - name: 3 - RtAudio (saida de som)
+      shell: pwsh
+      working-directory: ${{ runner.workspace }}
+      run: |
+        $ErrorActionPreference = 'Continue'
+        & {
+          git clone https://github.com/thestk/rtaudio
+          Set-Location rtaudio
+          git checkout 2f2fca4502d506abc50f6d4473b2836d24cfb1e3
+          New-Item -ItemType Directory build | Out-Null
+          Set-Location build
+          cmake ..
+          cmake --build . --config Release
+          if ($LASTEXITCODE -ne 0) { throw "falha ao compilar rtaudio" }
+          cmake --install .
+        } *>&1 | Tee-Object -FilePath "$env:LOGS/3-rtaudio.log"
+        if (-not $?) { exit 1 }
+
+    - name: 4 - Configurar (CMake)
+      shell: pwsh
+      working-directory: ${{ runner.workspace }}/build
+      run: |
+        $ErrorActionPreference = 'Continue'
+        $keep = @('OPT_BUILD_RTL_SDR_SOURCE','OPT_BUILD_RTL_TCP_SOURCE','OPT_BUILD_FILE_SOURCE','OPT_BUILD_AUDIO_SINK',
+                  'OPT_BUILD_RADIO','OPT_BUILD_CH_EXTRAVHF_DECODER','OPT_BUILD_ADSB_DECODER','OPT_BUILD_FREQUENCY_MANAGER',
+                  'OPT_BUILD_SCANNER','OPT_BUILD_RECORDER','OPT_BUILD_NOISE_REDUCTION_LOGMMSE')
+        $opts = @()
+        foreach ($m in (Select-String -Path "$env:GITHUB_WORKSPACE/CMakeLists.txt" -Pattern '^option\((OPT_BUILD_[A-Z0-9_]+)').Matches) {
+          $o = $m.Groups[1].Value
+          $opts += "-D$o=" + $(if ($keep -contains $o) { 'ON' } else { 'OFF' })
+        }
+        cmake "$env:GITHUB_WORKSPACE" -DCOPY_MSVC_REDISTRIBUTABLES=ON "-DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake" @opts 2>&1 | Tee-Object -FilePath "$env:LOGS/4-cmake.log"
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+
+    - name: 5 - Compilar
+      shell: pwsh
+      working-directory: ${{ runner.workspace }}/build
+      run: |
+        $ErrorActionPreference = 'Continue'
+        cmake --build . --config RelWithDebInfo -- /m /v:minimal 2>&1 | Tee-Object -FilePath "$env:LOGS/5-build.log"
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+
+    - name: 6 - Montar pacote
+      shell: pwsh
+      working-directory: ${{ runner.workspace }}
+      run: |
+        $ErrorActionPreference = 'Continue'
+        & {
+          $ErrorActionPreference = 'Stop'
+          $out = "sdrpp_simples_windows_x64"
+          $b = "${{ runner.workspace }}/build"
+          New-Item -ItemType Directory -Force "$out/modules" | Out-Null
+          Copy-Item -Recurse "$env:GITHUB_WORKSPACE/root/*" $out
+          Copy-Item "$b/RelWithDebInfo/*" $out -Recurse
+          # Módulos: a DLL com o mesmo nome da pasta do módulo
+          foreach ($grp in @('source_modules','sink_modules','decoder_modules','misc_modules')) {
+            Get-ChildItem "$b/$grp" -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+              $dll = Join-Path $_.FullName ("RelWithDebInfo/" + $_.Name + ".dll")
+              if (Test-Path $dll) { Copy-Item $dll "$out/modules/"; Write-Host "modulo: $($_.Name)" }
+            }
+          }
+          # Outras DLLs geradas pela compilação (ex.: mbelib do DMR) ficam ao lado do .exe
+          Get-ChildItem $b -Recurse -Filter *.dll | Where-Object { $_.FullName -notmatch '\\(source|sink|decoder|misc)_modules\\[^\\]+\\RelWithDebInfo\\[^\\]+\.dll$' -or $_.Directory.Parent.Name -ne $_.BaseName } |
+            Where-Object { -not (Test-Path (Join-Path "$out/modules" $_.Name)) -and -not (Test-Path (Join-Path $out $_.Name)) } |
+            ForEach-Object { Copy-Item $_.FullName $out; Write-Host "dll extra: $($_.Name)" }
+          # Dependências
+          Copy-Item "C:/vcpkg/installed/x64-windows/bin/*.dll" $out
+          foreach ($f in @('volk.dll','rtlsdr.dll','libusb-1.0.dll','pthreadVC2.dll')) {
+            if (Test-Path "C:/Program Files/PothosSDR/bin/$f") { Copy-Item "C:/Program Files/PothosSDR/bin/$f" $out }
+          }
+          Copy-Item "C:/Program Files (x86)/RtAudio/bin/rtaudio.dll" $out
+          if (-not (Test-Path "$out/sdrpp.exe")) { throw "sdrpp.exe nao foi gerado" }
+          Compress-Archive -Path "$out/*" -DestinationPath "$out.zip" -Force
+          Get-ChildItem $out, "$out/modules" | Select-Object Name, Length | Format-Table | Out-String | Write-Host
+        } *>&1 | Tee-Object -FilePath "$env:LOGS/6-pacote.log"
+        if (-not $?) { exit 1 }
+
+    - name: Salvar pacote
+      uses: actions/upload-artifact@v4
+      with:
+        name: sdrpp_simples_windows_x64
+        path: ${{ runner.workspace }}/sdrpp_simples_windows_x64.zip
+
+    - name: Relatar erro (anotacoes)
+      if: failure()
+      shell: pwsh
+      run: |
+        function Enc([string]$s) { return $s.Replace('%','%25').Replace("`r",'').Replace("`n",'%0A') }
+        $logs = Get-ChildItem $env:LOGS -Filter *.log -ErrorAction SilentlyContinue | Sort-Object LastWriteTime
+        if (-not $logs) { Write-Host "::error title=sem logs::nenhum log encontrado (falha antes dos passos numerados)"; exit 0 }
+        $last = $logs[-1]
+        $lines = Get-Content $last.FullName
+        $errs = $lines | Select-String -Pattern 'error|erro|fatal|cannot|not found|failed|falh' -CaseSensitive:$false | Select-Object -Last 25 | ForEach-Object { $_.Line.Trim() }
+        if ($errs) { Write-Host ("::error title=$($last.Name) - linhas com erro::" + (Enc (($errs | ForEach-Object { $_.Substring(0, [Math]::Min(300, $_.Length)) }) -join "`n"))) }
+        $tail = $lines | Select-Object -Last 60 | ForEach-Object { $_.Substring(0, [Math]::Min(300, $_.Length)) }
+        Write-Host ("::error title=$($last.Name) - final do log::" + (Enc ($tail -join "`n")))
