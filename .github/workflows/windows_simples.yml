@@ -151,7 +151,7 @@ jobs:
         if (-not $logs) { Write-Host "::error title=sem logs::nenhum log encontrado (falha antes dos passos numerados)"; exit 0 }
         $last = $logs[-1]
         $lines = Get-Content $last.FullName
-        $errs = $lines | Select-String -Pattern 'error|erro|fatal|cannot|not found|failed|falh' -CaseSensitive:$false | Select-Object -Last 25 | ForEach-Object { $_.Line.Trim() }
+        $errs = $lines | Select-String -Pattern ': (fatal )?error [A-Z]+\d+|error LNK\d+|CMake Error|unresolved external|Cannot open|throw|falhou|faltando' | ForEach-Object { $_.Line.Trim() } | Select-Object -Unique | Select-Object -First 30
         if ($errs) { Write-Host ("::error title=$($last.Name) - linhas com erro::" + (Enc (($errs | ForEach-Object { $_.Substring(0, [Math]::Min(300, $_.Length)) }) -join "`n"))) }
         $tail = $lines | Select-Object -Last 60 | ForEach-Object { $_.Substring(0, [Math]::Min(300, $_.Length)) }
         Write-Host ("::error title=$($last.Name) - final do log::" + (Enc ($tail -join "`n")))
