@@ -596,23 +596,24 @@ int sdrpp_main(int argc, char* argv[]) {
     defConfig["menuElements"][1]["name"] = "Radio";
     defConfig["menuElements"][1]["open"] = true;
 
-    defConfig["menuElements"][2]["name"] = "Recorder";
+    // Layout simples: listas de canais + scanner logo abaixo do rádio; o resto fechado
+    defConfig["menuElements"][2]["name"] = "Frequency Manager";
     defConfig["menuElements"][2]["open"] = true;
 
     defConfig["menuElements"][3]["name"] = "Sinks";
-    defConfig["menuElements"][3]["open"] = true;
+    defConfig["menuElements"][3]["open"] = false;
 
-    defConfig["menuElements"][4]["name"] = "Frequency Manager";
-    defConfig["menuElements"][4]["open"] = true;
+    defConfig["menuElements"][4]["name"] = "Recorder";
+    defConfig["menuElements"][4]["open"] = false;
 
     defConfig["menuElements"][5]["name"] = "VFO Color";
-    defConfig["menuElements"][5]["open"] = true;
+    defConfig["menuElements"][5]["open"] = false;
 
     defConfig["menuElements"][6]["name"] = "Band Plan";
-    defConfig["menuElements"][6]["open"] = true;
+    defConfig["menuElements"][6]["open"] = false;
 
     defConfig["menuElements"][7]["name"] = "Display";
-    defConfig["menuElements"][7]["open"] = true;
+    defConfig["menuElements"][7]["open"] = false;
 
 #ifdef __ANDROID__
     defConfig["menuWidth"] = 700;

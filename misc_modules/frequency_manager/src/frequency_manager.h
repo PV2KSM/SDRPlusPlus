@@ -9,6 +9,8 @@ struct FrequencyBookmark {
     int modeIndex;
     bool selected;
     std::string vfoName; // VFO/radio this bookmark belongs to; empty = legacy (apply to currently selected VFO)
+    int demodId = -1;    // ID do demodulador salvo na config. Modos de plugins (ex.: DSD) podem ainda não
+                         // existir quando a lista é carregada; aí modeIndex fica -1 e é resolvido depois por este ID.
 };
 
 struct WaterfallBookmark {

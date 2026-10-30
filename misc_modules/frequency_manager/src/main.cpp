@@ -182,7 +182,8 @@ public:
                     modeIndex = std::stoi(modeStr);
                 } catch (...) {
                     if (demodModeListRev.find(modeStr) != demodModeListRev.end()) {
-                        modeIndex = demodModeListRev[modeStr];
+                        // demodModeListRev guarda o ID do demodulador; o bookmark guarda o índice
+                        modeIndex = radio ? radio->getDemodIndex(demodModeListRev[modeStr]) : demodModeListRev[modeStr];
                     } else {
                         return json{{"error", "unknown mode: " + modeStr}}.dump();
                     }
@@ -227,7 +228,8 @@ public:
             return json{{"status", "ok"}, {"applied", args}, {"frequency", bm.frequency}, {"bandwidth", bm.bandwidth}, {"vfo", targetVfo.empty() ? "center" : targetVfo}}.dump();
         }
         if (cmd == "get_scanner_status") {
-            return json{{"scanning", scanner.isScanning()}, {"current_station", scanner.getCurrentStation()}, {"bookmark_count", (int)bookmarks.size()}}.dump();
+            return json{{"scanning", scanner.isScanning()}, {"current_station", scanner.getCurrentStation()}, {"bookmark_count", (int)bookmarks.size()},
+                        {"receiving", scanner.isReceiving()}, {"holding", scanner.isHolding()}, {"log", json::parse(scanner.getLogJson())}}.dump();
         }
         if (cmd == "start_scanner") {
             if (bookmarks.empty()) {
@@ -419,6 +421,7 @@ private:
                 wbm.bookmark.bandwidth = config.conf["lists"][listName]["bookmarks"][bookmarkName]["bandwidth"];
                 int mode = config.conf["lists"][listName]["bookmarks"][bookmarkName]["mode"];
                 wbm.bookmark.modeIndex = (radio != nullptr) ? radio->getDemodIndex(mode) : -1;
+                wbm.bookmark.demodId = mode;
                 wbm.bookmark.vfoName = config.conf["lists"][listName]["bookmarks"][bookmarkName].value("vfo", "");
                 wbm.bookmark.selected = false;
                 wbm.notValidAfter = 0;
@@ -462,6 +465,7 @@ private:
             fbm.frequency = bm["frequency"];
             fbm.bandwidth = bm["bandwidth"];
             fbm.modeIndex = (radio != nullptr) ? radio->getDemodIndex(bm["mode"]) : -1;
+            fbm.demodId = bm["mode"];
             fbm.vfoName = bm.value("vfo", "");
             fbm.selected = false;
             bookmarks[bmName] = fbm;
@@ -489,7 +493,9 @@ private:
         for (auto [bmName, bm] : bookmarks) {
             config.conf["lists"][listName]["bookmarks"][bmName]["frequency"] = bm.frequency;
             config.conf["lists"][listName]["bookmarks"][bmName]["bandwidth"] = bm.bandwidth;
-            DemodID demodId = (radio != nullptr) ? radio->getDemodByIndex(bm.modeIndex) : (DemodID)-1;
+            // modeIndex < 0: modo ainda não resolvido (plugin carregou depois) ou não especificado.
+            // Preserva o ID original em vez de gravar NFM (getDemodByIndex(-1) devolve NFM).
+            DemodID demodId = (radio != nullptr && bm.modeIndex >= 0) ? radio->getDemodByIndex(bm.modeIndex) : (DemodID)bm.demodId;
             flog::info("bm.modeIndex={}, demodId={}", (int)bm.modeIndex, (int)demodId);
             config.conf["lists"][listName]["bookmarks"][bmName]["mode"] = demodId;
             config.conf["lists"][listName]["bookmarks"][bmName]["vfo"] = bm.vfoName;
@@ -504,6 +510,16 @@ private:
         if (demodModeList.empty()) {
             auto radio = (RadioModuleInterface *)core::moduleManager.getInterface(gui::waterfall.selectedVFO, "RadioModuleInterface");
             _this->updateModeList(radio);
+        }
+
+        // Resolve modos que não existiam quando a lista foi carregada (ex.: DSD do ch_extravhf_decoder)
+        {
+            auto radio = (RadioModuleInterface *)core::moduleManager.getInterface(gui::waterfall.selectedVFO, "RadioModuleInterface");
+            if (radio) {
+                for (auto& [bmName, bm] : _this->bookmarks) {
+                    if (bm.modeIndex < 0 && bm.demodId >= 0) { bm.modeIndex = radio->getDemodIndex(bm.demodId); }
+                }
+            }
         }
 
         float menuWidth = ImGui::GetContentRegionAvail().x;
@@ -560,7 +576,7 @@ private:
         for (auto& [name, bm] : _this->bookmarks) {
             bookmarkNames.push_back(name);
         }
-        _this->scanner.setBookmarks(bookmarkNames, _this->bookmarks);
+        _this->scanner.setBookmarks(_this->selectedListName, bookmarkNames, _this->bookmarks);
         
         // Update and render scanner section
         _this->scanner.update(ImGui::GetIO().DeltaTime);
@@ -669,7 +685,7 @@ private:
                 ImVec2 min = ImGui::GetCursorPos();
 
                 if (vfoMissing) { style::beginDisabled(); }
-                if (ImGui::Selectable((name + "##_freq_mgr_bkm_name_" + _this->name).c_str(), &bm.selected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_SelectOnClick)) {
+                if (ImGui::Selectable(((_this->scanner.isLockedOut(name) ? name + "  [bloq.]" : name) + "##_freq_mgr_bkm_name_" + _this->name).c_str(), &bm.selected, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_SelectOnClick)) {
                     // if shift or control isn't pressed, deselect all others
                     if (!ImGui::GetIO().KeyShift && !ImGui::GetIO().KeyCtrl) {
                         for (auto& [_name, _bm] : _this->bookmarks) {
@@ -965,6 +981,7 @@ again:
             fbm.frequency = bm["frequency"];
             fbm.bandwidth = bm["bandwidth"];
             fbm.modeIndex = (radio != nullptr) ? radio->getDemodIndex(bm["mode"]) : -1;
+            fbm.demodId = bm["mode"];
             fbm.vfoName = bm.value("vfo", "");
             fbm.selected = false;
             bookmarks[_name] = fbm;
@@ -1030,10 +1047,24 @@ void applyBookmark(FrequencyBookmark bm, std::string vfoName) {
         ModuleManager::Instance *pInstance = x.second.instance;
         auto radio = (RadioModuleInterface *)pInstance->getInterface("RadioModuleInterface");
         if (radio && x.first == targetVfo) {
-            int mode = radio->getDemodByIndex(bm.modeIndex);
+            // Só troca o modo quando é diferente: recriar o demodulador a cada
+            // canal deixa o scanner lento e gera estalos. modeIndex < 0 =
+            // "não especificado", mantém o modo atual.
+            if (bm.modeIndex < 0 && bm.demodId >= 0) { bm.modeIndex = radio->getDemodIndex(bm.demodId); }
+            if (bm.modeIndex >= 0) {
+                int mode = radio->getDemodByIndex(bm.modeIndex);
+                int curMode = -1;
+                core::modComManager.callInterface(targetVfo, RADIO_IFACE_CMD_GET_MODE, NULL, &curMode);
+                if (curMode != mode) {
+                    core::modComManager.callInterface(targetVfo, RADIO_IFACE_CMD_SET_MODE, &mode, NULL);
+                }
+            }
             float bandwidth = bm.bandwidth;
-            core::modComManager.callInterface(targetVfo, RADIO_IFACE_CMD_SET_MODE, &mode, NULL);
-            core::modComManager.callInterface(targetVfo, RADIO_IFACE_CMD_SET_BANDWIDTH, &bandwidth, NULL);
+            float curBw = -1.0f;
+            core::modComManager.callInterface(targetVfo, RADIO_IFACE_CMD_GET_BANDWIDTH, NULL, &curBw);
+            if (curBw != bandwidth) {
+                core::modComManager.callInterface(targetVfo, RADIO_IFACE_CMD_SET_BANDWIDTH, &bandwidth, NULL);
+            }
         }
     }
     tuner::tune(tuner::TUNER_MODE_NORMAL, targetVfo, bm.frequency);
@@ -1052,8 +1083,8 @@ MOD_EXPORT void _INIT_() {
     def["scanner"] = json::object();
     def["scanner"]["scanIntervalMs"] = 100.0f;
     def["scanner"]["listenTimeSec"] = 10.0f;
-    def["scanner"]["noiseFloor"] = -120.0f;
-    def["scanner"]["signalMarginDb"] = 6.0f;
+    def["scanner"]["noiseFloor"] = 3.0f;   // SNR em dB (0..40), não nível absoluto
+    def["scanner"]["signalMarginDb"] = 4.0f;
     def["scanner"]["squelchEnabled"] = false;
 
     config.setPath(std::string(core::getRoot()) + "/frequency_manager_config.json");
