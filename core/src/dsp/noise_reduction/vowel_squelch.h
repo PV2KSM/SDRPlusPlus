@@ -395,7 +395,7 @@ private:
     void assign(const std::vector<double>& cost, int n, int m, std::vector<int>& result) const {
         result.assign((size_t)n, -1);
         if (n <= 0 || m <= 0) { return; }
-        const double inf = std::numeric_limits<double>::max() / 4.0;
+        const double inf = (std::numeric_limits<double>::max)() / 4.0;
         std::vector<double> u((size_t)n + 1, 0.0), v((size_t)m + 1, 0.0);
         std::vector<int> p((size_t)m + 1, 0), way((size_t)m + 1, 0);
         for (int i = 1; i <= n; i++) {
