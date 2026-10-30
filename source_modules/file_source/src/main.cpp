@@ -395,8 +395,8 @@ private:
 
     static void worker(void* ctx) {
         FileSourceModule* _this = (FileSourceModule*)ctx;
-        double sampleRate = std::max(_this->reader->getSampleRate(), (uint32_t)1);
-        int blockSize = std::min((int)(sampleRate / 200.0f), (int)STREAM_BUFFER_SIZE);
+        double sampleRate = (std::max)(_this->reader->getSampleRate(), (uint32_t)1);
+        int blockSize = (std::min)((int)(sampleRate / 200.0f), (int)STREAM_BUFFER_SIZE);
         int16_t* inBuf = new int16_t[blockSize * 2];
 
         long long samplesRead = 0;
@@ -430,8 +430,8 @@ private:
 
     static void floatWorker(void* ctx) {
         FileSourceModule* _this = (FileSourceModule*)ctx;
-        double sampleRate = std::max(_this->reader->getSampleRate(), (uint32_t)1);
-        int blockSize = std::min((int)(sampleRate / 200.0f), (int)STREAM_BUFFER_SIZE);
+        double sampleRate = (std::max)(_this->reader->getSampleRate(), (uint32_t)1);
+        int blockSize = (std::min)((int)(sampleRate / 200.0f), (int)STREAM_BUFFER_SIZE);
         long long samplesRead = 0;
         sigpath::iqFrontEnd.setCurrentStreamTime(_this->streamStartTime);
 
