@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mapa ADS-B — SDR++</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --bg:#0f1720; --panel:#16212d; --line:#253445; --text:#e6edf3; --dim:#8aa0b4; --acc:#4fb3ff; --warn:#ff5d5d; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text); font:14px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  #app { display:flex; height:100%; }
+  #map { flex:1; }
+  #side { width:330px; background:var(--panel); border-left:1px solid var(--line); display:flex; flex-direction:column; }
+  header { padding:12px 14px; border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0 0 4px; }
+  #status { color:var(--dim); font-size:12px; }
+  #status.err { color:var(--warn); }
+  #controls { display:flex; gap:12px; padding:8px 14px; border-bottom:1px solid var(--line); color:var(--dim); font-size:12px; }
+  #list { flex:1; overflow:auto; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { position:sticky; top:0; background:var(--panel); color:var(--dim); font-weight:500; text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  td { padding:5px 8px; border-bottom:1px solid #1d2a38; white-space:nowrap; }
+  td.n { text-align:right; font-variant-numeric:tabular-nums; }
+  tr { cursor:pointer; }
+  tr:hover td { background:#1c2a39; }
+  tr.sel td { background:#1f3a55; }
+  tr.nopos td { color:var(--dim); }
+  tr.emerg td { color:var(--warn); font-weight:600; }
+  #info { border-top:1px solid var(--line); padding:10px 14px; font-size:13px; min-height:120px; }
+  #info .k { color:var(--dim); display:inline-block; width:92px; }
+  #info a { color:var(--acc); }
+  .plane-label { background:rgba(15,23,32,.75); color:#fff; border:0; border-radius:3px; padding:0 4px; font:11px system-ui, sans-serif; box-shadow:none; }
+  .plane-label::before { display:none; }
+  .leaflet-container { background:#0b1118; }
+  @media (max-width: 760px) {
+    #app { flex-direction:column; }
+    #side { width:100%; height:42%; border-left:0; border-top:1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map"></div>
+  <aside id="side">
+    <header>
+      <h1>✈ Aviões (ADS-B 1090 MHz)</h1>
+      <div id="status">Conectando ao SDR++…</div>
+    </header>
+    <div id="controls">
+      <label><input type="checkbox" id="trails" checked> Rastros</label>
+      <label><input type="checkbox" id="labels" checked> Nomes</label>
+      <label><input type="checkbox" id="follow"> Seguir selecionado</label>
+    </div>
+    <div id="list"><table><thead><tr><th>Voo</th><th class="n">Alt (ft)</th><th class="n">Vel (kt)</th><th class="n">Dist (km)</th></tr></thead><tbody id="rows"></tbody></table></div>
+    <div id="info">Clique num avião para ver os detalhes.</div>
+  </aside>
+</div>
+<script>
+const map = L.map('map', { zoomControl: true, worldCopyJump: true }).setView([-15, -50], 4);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 18, attribution: '&copy; colaboradores do <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+}).addTo(map);
+
+const planes = {};          // hex -> {marker, trail}
+let selected = null, receiver = null, rxLayer = null, fitted = false;
+
+function altColor(alt) {
+  if (alt === undefined) return '#9aa5b1';
+  const t = Math.max(0, Math.min(1, alt / 40000));          // 0 = chão, 1 = 40 000 ft
+  const h = 30 + t * 270;                                    // laranja → verde → azul → roxo
+  return `hsl(${h},85%,55%)`;
+}
+function emergency(a) { return a.squawk === '7500' || a.squawk === '7600' || a.squawk === '7700'; }
+function planeSvg(a, sel) {
+  const c = emergency(a) ? '#ff3b3b' : altColor(a.alt_baro);
+  const s = sel ? 34 : 26;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}" viewBox="-16 -16 32 32" style="transform:rotate(${a.track||0}deg)">
+    <path d="M0,-14 L2.2,-5 L13,1.5 L13,4 L2.2,1 L1.6,9 L5,11.5 L5,13.5 L0,12 L-5,13.5 L-5,11.5 L-1.6,9 L-2.2,1 L-13,4 L-13,1.5 L-2.2,-5 Z"
+      fill="${c}" stroke="${sel ? '#fff' : '#0b1118'}" stroke-width="${sel ? 1.6 : 1}"/></svg>`;
+}
+function icon(a, sel) {
+  const s = sel ? 34 : 26;
+  return L.divIcon({ className: '', html: planeSvg(a, sel), iconSize: [s, s], iconAnchor: [s / 2, s / 2] });
+}
+function fmt(v, d = 0) { return v === undefined ? '—' : Number(v).toLocaleString('pt-BR', { maximumFractionDigits: d, minimumFractionDigits: d }); }
+function name(a) { return a.flight || a.hex.toUpperCase(); }
+
+function drawReceiver(r) {
+  if (rxLayer) rxLayer.remove();
+  rxLayer = L.layerGroup().addTo(map);
+  L.circleMarker([r.lat, r.lon], { radius: 6, color: '#fff', weight: 2, fillColor: '#4fb3ff', fillOpacity: 1 })
+    .bindTooltip('Sua estação').addTo(rxLayer);
+  for (const km of [50, 100, 200, 300])
+    L.circle([r.lat, r.lon], { radius: km * 1000, color: '#4fb3ff', weight: 1, opacity: .35, fill: false, dashArray: '4 6' })
+      .bindTooltip(km + ' km').addTo(rxLayer);
+}
+
+function showInfo(a) {
+  const el = document.getElementById('info');
+  if (!a) { el.innerHTML = 'Clique num avião para ver os detalhes.'; return; }
+  const vr = a.baro_rate === undefined ? '—' : (a.baro_rate > 0 ? '▲ ' : a.baro_rate < 0 ? '▼ ' : '') + fmt(Math.abs(a.baro_rate)) + ' ft/min';
+  el.innerHTML = `<div style="font-size:15px;font-weight:600;margin-bottom:6px">${name(a)} ${emergency(a) ? '<span style="color:var(--warn)">EMERGÊNCIA ' + a.squawk + '</span>' : ''}</div>
+    <div><span class="k">ICAO</span>${a.hex.toUpperCase()}</div>
+    <div><span class="k">Altitude</span>${fmt(a.alt_baro)} ft</div>
+    <div><span class="k">Velocidade</span>${fmt(a.gs)} kt · rumo ${fmt(a.track)}°</div>
+    <div><span class="k">Subida</span>${vr}</div>
+    <div><span class="k">Squawk</span>${a.squawk || '—'}</div>
+    <div><span class="k">Distância</span>${a.dist_km !== undefined ? fmt(a.dist_km, 1) + ' km' : '—'}</div>
+    <div><span class="k">Sinal</span>${fmt(a.rssi, 1)} dBFS · ${a.messages} msgs · visto há ${fmt(a.seen)} s</div>
+    <div style="margin-top:6px"><a href="https://globe.adsbexchange.com/?icao=${a.hex}" target="_blank" rel="noopener">ver no ADS-B Exchange</a></div>`;
+}
+
+function select(hex) {
+  selected = (selected === hex) ? null : hex;
+  for (const h in planes) planes[h].dirty = true;
+}
+
+async function refresh() {
+  let data;
+  try {
+    const r = await fetch('data/aircraft.json', { cache: 'no-store' });
+    data = await r.json();
+  } catch (e) {
+    const st = document.getElementById('status');
+    st.textContent = 'Sem conexão com o SDR++ (o programa está aberto?)';
+    st.className = 'err';
+    return;
+  }
+  const st = document.getElementById('status');
+  const list = data.aircraft || [];
+  const withPos = list.filter(a => a.lat !== undefined);
+  st.className = data.running ? '' : 'err';
+  st.textContent = data.running
+    ? `${list.length} aviões · ${withPos.length} com posição · ${fmt(data.messages)} mensagens`
+    : 'ADS-B desligado no SDR++ (clique em "Iniciar ADS-B")';
+
+  if (data.receiver && (!receiver || receiver.lat !== data.receiver.lat || receiver.lon !== data.receiver.lon)) {
+    receiver = data.receiver;
+    drawReceiver(receiver);
+    if (!fitted) { map.setView([receiver.lat, receiver.lon], 8); fitted = true; }
+  }
+  if (!fitted && withPos.length) {
+    map.fitBounds(L.latLngBounds(withPos.map(a => [a.lat, a.lon])).pad(0.3), { maxZoom: 9 });
+    fitted = true;
+  }
+
+  const showTrails = document.getElementById('trails').checked;
+  const showLabels = document.getElementById('labels').checked;
+  const seen = new Set();
+  for (const a of withPos) {
+    seen.add(a.hex);
+    const sel = a.hex === selected;
+    let p = planes[a.hex];
+    if (!p) {
+      p = planes[a.hex] = {
+        marker: L.marker([a.lat, a.lon], { icon: icon(a, sel) }).addTo(map),
+        trail: L.polyline([], { weight: 2, opacity: .5 }).addTo(map)
+      };
+      p.marker.on('click', () => { select(a.hex); refresh(); });
+    }
+    p.marker.setLatLng([a.lat, a.lon]);
+    // Só recria o ícone/rótulo quando algo visível mudou (evita piscar)
+    const iconKey = `${Math.round(a.track || 0)}|${a.alt_baro >> 9}|${sel}|${emergency(a)}`;
+    if (p.iconKey !== iconKey) { p.marker.setIcon(icon(a, sel)); p.iconKey = iconKey; }
+    p.marker.setZIndexOffset(sel ? 1000 : 0);
+    const text = `${name(a)}${a.alt_baro !== undefined ? ' · ' + Math.round(a.alt_baro / 100) * 100 : ''}`;
+    if (showLabels) {
+      if (!p.marker.getTooltip()) {
+        p.marker.bindTooltip(text, { permanent: true, direction: 'right', offset: [12, 0], className: 'plane-label' });
+      } else if (p.label !== text) {
+        p.marker.setTooltipContent(text);
+      }
+      p.label = text;
+    } else if (p.marker.getTooltip()) {
+      p.marker.unbindTooltip();
+      p.label = null;
+    }
+    const pts = (a.trail || []).map(t => [t[0], t[1]]);
+    p.trail.setLatLngs(showTrails || sel ? pts : []);
+    p.trail.setStyle({ color: sel ? '#ffffff' : altColor(a.alt_baro), opacity: sel ? .9 : .45, weight: sel ? 3 : 2 });
+    if (sel && document.getElementById('follow').checked) map.panTo([a.lat, a.lon], { animate: true });
+  }
+  for (const h in planes) {
+    if (!seen.has(h)) { planes[h].marker.remove(); planes[h].trail.remove(); delete planes[h]; }
+  }
+
+  // Lista: com posição primeiro (mais perto no topo), depois sem posição
+  list.sort((x, y) => {
+    const px = x.lat !== undefined, py = y.lat !== undefined;
+    if (px !== py) return px ? -1 : 1;
+    return (x.dist_km ?? 1e9) - (y.dist_km ?? 1e9) || x.seen - y.seen;
+  });
+  const rows = document.getElementById('rows');
+  rows.innerHTML = '';
+  for (const a of list) {
+    const tr = document.createElement('tr');
+    if (a.lat === undefined) tr.className = 'nopos';
+    if (emergency(a)) tr.className = 'emerg';
+    if (a.hex === selected) tr.className += ' sel';
+    tr.innerHTML = `<td>${name(a)}</td><td class="n">${fmt(a.alt_baro)}</td><td class="n">${fmt(a.gs)}</td><td class="n">${a.dist_km !== undefined ? fmt(a.dist_km) : '—'}</td>`;
+    tr.onclick = () => {
+      select(a.hex);
+      if (a.lat !== undefined && selected) map.panTo([a.lat, a.lon]);
+      refresh();
+    };
+    rows.appendChild(tr);
+  }
+  showInfo(list.find(a => a.hex === selected));
+}
+
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>

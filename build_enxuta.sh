@@ -14,6 +14,7 @@ KEEP=(
   OPT_BUILD_AUDIO_SINK            # saída de áudio
   OPT_BUILD_RADIO                 # AM/FM/NFM (banda aérea)
   OPT_BUILD_CH_EXTRAVHF_DECODER   # DSD interno: DMR, P25, NXDN, dPMR, YSF
+  OPT_BUILD_ADSB_DECODER          # ADS-B 1090 MHz: radar + mapa no navegador
   OPT_BUILD_FREQUENCY_MANAGER     # listas de canais + scanner por lista
   OPT_BUILD_SCANNER               # varredura de faixa (achar frequências novas)
   OPT_BUILD_RECORDER              # gravar áudio/IQ

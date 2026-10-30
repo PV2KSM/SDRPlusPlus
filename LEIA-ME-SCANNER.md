@@ -1,4 +1,4 @@
-# SDR++Brown — versão simples (RTL-SDR v3: banda aérea, DMR, scanner)
+# SDR++Brown — versão simples (RTL-SDR v3: banda aérea, DMR, scanner, ADS-B)
 
 ## O que muda em relação ao original
 
@@ -17,10 +17,12 @@
   - Varre em ordem de frequência e só troca de modo quando precisa
     (sem estalos ao alternar entre canais AM e DMR iguais).
   - **Log de atividade** na tela e em `scanner_log.csv` (pasta root do programa).
-- **Build enxuta:** só RTL-SDR, rtl_tcp, arquivo IQ, áudio, rádio, DSD,
+- **ADS-B (aviões em 1090 MHz)** com radar no painel e mapa no navegador
+  (veja a seção ADS-B abaixo).
+- **Build enxuta:** só RTL-SDR, rtl_tcp, arquivo IQ, áudio, rádio, DSD, ADS-B,
   gerenciador de frequências, scanner de faixa, gravador e redução de ruído.
-- **Layout:** Frequency Manager (listas + scanner) logo abaixo do Radio; o resto
-  começa fechado (vale para configuração nova).
+- **Layout:** Frequency Manager (listas + scanner) e ADS-B logo abaixo do Radio;
+  o resto começa fechado (vale para configuração nova).
 
 ### Bugs do original corrigidos
 
@@ -62,3 +64,27 @@ sh create_root.sh && ./build-enxuta/sdrpp -r root_dev
   curtas, aumente para 600–800 ms.
 
 DMR **criptografado** não é decodificado — só DMR aberto.
+
+## ADS-B: aviões no mapa
+
+1. Abra o painel **ADS-B** e clique em **Iniciar ADS-B (1090 MHz)**. O RTL-SDR
+   vai inteiro para 1090 MHz (banda aérea e scanner param). **Parar ADS-B**
+   volta para a frequência em que você estava.
+2. O painel mostra quantos aviões, quantas mensagens por segundo, um **radar**
+   (alcance de 25 a 400 km; passe o mouse num avião para ver os dados) e a lista.
+3. **Abrir mapa no navegador** abre um mapa (OpenStreetMap) com os aviões,
+   rastros, distância e detalhes ao clicar. Squawk 7500/7600/7700 aparece em
+   vermelho. O mapa precisa de internet só para baixar as ruas/os quadros do mapa.
+4. **Abrir também no celular:** marque a opção e abra no celular o endereço que
+   aparece (ex.: `http://192.168.0.10:8091`), na mesma rede Wi-Fi.
+5. **Sua posição:** por padrão usa o *My Grid* do painel Source (ex.: `GG66`).
+   Ou desmarque e digite latitude/longitude. Sem posição o radar centraliza nos
+   aviões e a distância não aparece.
+
+Dicas para o RTL-SDR v3:
+- **Sample rate 2,4 MS/s** e **ganho alto** (40–49 dB). ADS-B gosta de ganho.
+- **Antena:** 1090 MHz pede antena curta. Com o kit dipolo do v3, use os
+  elementos curtos com uns **6,5 cm de cada lado**, na vertical, perto de uma
+  janela ou do lado de fora. Uma antena própria de 1090 MHz rende muito mais.
+- Os dados ficam em `http://127.0.0.1:8091/data/aircraft.json`, no mesmo formato
+  do dump1090.

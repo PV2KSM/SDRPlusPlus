@@ -600,20 +600,23 @@ int sdrpp_main(int argc, char* argv[]) {
     defConfig["menuElements"][2]["name"] = "Frequency Manager";
     defConfig["menuElements"][2]["open"] = true;
 
-    defConfig["menuElements"][3]["name"] = "Sinks";
+    defConfig["menuElements"][3]["name"] = "ADS-B";
     defConfig["menuElements"][3]["open"] = false;
 
-    defConfig["menuElements"][4]["name"] = "Recorder";
+    defConfig["menuElements"][4]["name"] = "Sinks";
     defConfig["menuElements"][4]["open"] = false;
 
-    defConfig["menuElements"][5]["name"] = "VFO Color";
+    defConfig["menuElements"][5]["name"] = "Recorder";
     defConfig["menuElements"][5]["open"] = false;
 
-    defConfig["menuElements"][6]["name"] = "Band Plan";
+    defConfig["menuElements"][6]["name"] = "VFO Color";
     defConfig["menuElements"][6]["open"] = false;
 
-    defConfig["menuElements"][7]["name"] = "Display";
+    defConfig["menuElements"][7]["name"] = "Band Plan";
     defConfig["menuElements"][7]["open"] = false;
+
+    defConfig["menuElements"][8]["name"] = "Display";
+    defConfig["menuElements"][8]["open"] = false;
 
 #ifdef __ANDROID__
     defConfig["menuWidth"] = 700;
@@ -696,6 +699,8 @@ int sdrpp_main(int argc, char* argv[]) {
     defConfig["moduleInstances"]["FT8/FT4 Decoder"]["enabled"] = true;
     defConfig["moduleInstances"]["VHF Digital Modes"]["module"] = "ch_extravhf_decoder";
     defConfig["moduleInstances"]["VHF Digital Modes"]["enabled"] = true;
+    defConfig["moduleInstances"]["ADS-B"]["module"] = "adsb_decoder";
+    defConfig["moduleInstances"]["ADS-B"]["enabled"] = true;
     defConfig["moduleInstances"]["TETRA Demodulator"]["module"] = "ch_tetra_demodulator";
     defConfig["moduleInstances"]["TETRA Demodulator"]["enabled"] = false;
     // defConfig["moduleInstances"]["Rigctl Client"] = "rigctl_client";
