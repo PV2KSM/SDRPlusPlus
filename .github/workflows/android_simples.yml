@@ -1,0 +1,64 @@
+name: Android (SDR++ Simples)
+
+# Só o APK do Android. A matriz completa (Linux/macOS/Windows antigo) do
+# build_all.yml agora roda só manualmente, para não gastar fila do GitHub.
+
+on:
+  push:
+    branches: [ master, scanner-simples ]
+  workflow_dispatch:
+
+env:
+    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+permissions:
+  contents: write
+
+jobs:
+    build_android:
+        runs-on: ubuntu-latest
+
+        steps:
+        - uses: actions/checkout@v4
+
+        - name: Fetch container
+          working-directory: ${{runner.workspace}}
+          run: git clone https://github.com/sannysanoff/android-sdr-kit
+
+        - name: Build container
+          working-directory: ${{runner.workspace}}/android-sdr-kit
+          run: docker build --progress=plain -t android-sdr-kit .
+
+        - name: Build
+          run: |
+            set -o pipefail
+            docker run --name build -v $GITHUB_WORKSPACE:/root/SDRPlusPlus android-sdr-kit /bin/bash -l -c "apt-get update && apt-get install -y unzip && cd /root/SDRPlusPlus/android && gradle -PsdrKitRoot=/sdr-kit --info assembleDebug" 2>&1 | tee ${{runner.workspace}}/android_build.log
+
+        - name: Erros da compilacao Android (anotacoes)
+          if: failure()
+          run: |
+            L=${{runner.workspace}}/android_build.log
+            # GitHub mostra no máximo 10 anotações por passo: junta cada erro com o contexto numa só
+            grep -n -E "What went wrong|CMake Error|error:|undefined reference|fatal error" "$L" | head -8 | cut -d: -f1 | while read n; do
+              msg=$(sed -n "$((n)),$((n+14))p" "$L" | cut -c1-300 | sed ':a;N;$!ba;s/\n/%0A/g')
+              echo "::error::$msg"
+            done
+            echo "::warning::$(tail -15 "$L" | cut -c1-200 | sed ':a;N;$!ba;s/\n/%0A/g')"
+
+        - name: Recover APK
+          working-directory: ${{runner.workspace}}
+          run: docker cp build:/root/SDRPlusPlus/android/app/build/outputs/apk/debug/app-debug.apk ./ && mv app-debug.apk sdrpp.apk
+
+        - name: Save APK
+          uses: actions/upload-artifact@v4
+          with:
+              name: sdrpp_android
+              path: ${{runner.workspace}}/sdrpp.apk
+
+        - name: Publicar APK na pagina de Releases (simples)
+          if: github.ref == 'refs/heads/master'
+          working-directory: ${{runner.workspace}}
+          run: |
+            cp sdrpp.apk sdrpp_simples_android.apk
+            gh release view simples -R ${{github.repository}} >/dev/null 2>&1 || gh release create simples -R ${{github.repository}} --target ${{github.sha}} --title "SDR++ Simples (versao mais recente)" --notes "Downloads atualizados automaticamente. Windows: sdrpp_simples_windows_x64.zip (descompacte e abra o sdrpp.exe). Android: sdrpp_simples_android.apk."
+            gh release upload simples sdrpp_simples_android.apk -R ${{github.repository}} --clobber
