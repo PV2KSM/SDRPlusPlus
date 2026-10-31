@@ -14,6 +14,7 @@
 #include <gui/widgets/constellation_diagram.h>
 #include "../dsp/dsd.h"
 #include "../dsp/slicer.h"
+#include "../dsp/afc_quadrature.h"
 #include "gui/style.h"
 #include <dsp/clock_recovery/fd.h>
 #include <dsp/clock_recovery/mm.h>
@@ -24,12 +25,16 @@
 
 #define CONCAT(a, b) ((std::string(a) + b).c_str())
 
-#define INSR                   (4800.0f * 2)
+// 5 amostras por símbolo: com 9600 a faixa de 12,5 kHz do DMR era cortada/rebatida
+#define INSR                   (4800.0f * 5)
 #define CLOCK_RECOVERY_BW      0.1f
 #define CLOCK_RECOVERY_DAMPN_F 1.0f
 #define CLOCK_RECOVERY_REL_LIM 0.001f
 #define RRC_TAP_COUNT          65
 #define RRC_ALPHA              0.23f
+#ifndef AFC_CUTOFF
+#define AFC_CUTOFF             4200.0
+#endif
 
 namespace demod {
     // P25p1 = 13 kHz
@@ -55,6 +60,7 @@ namespace demod {
             std::string slot0_type = "";
             std::string slot1_type = "";
             std::string mbe_errorbar = "";
+            float offset_hz = 0;      // erro de frequência corrigido pelo AFC
         };
 
         DSD() {}
@@ -80,7 +86,8 @@ namespace demod {
             float recov_denominator = (1.0f + 2.0 * recov_dampningFactor * recov_bandwidth + recov_bandwidth * recov_bandwidth);
             float recov_mu = (4.0f * recov_dampningFactor * recov_bandwidth) / recov_denominator;
             float recov_omega = (4.0f * recov_bandwidth * recov_bandwidth) / recov_denominator;
-            quadDemod.init(input, 1944.0f, INSR);
+            // FM com AFC: segue até 7 kHz de erro do RTL-SDR e filtra só o canal 4FSK
+            quadDemod.init(input, 1944.0f, INSR, AFC_CUTOFF, 6000.0);
             dcBlock.init(&quadDemod.out, 1.0f / INSR);
             rrcTaps = dsp::taps::rootRaisedCosine<float>(RRC_TAP_COUNT, RRC_ALPHA, 4800.0f, INSR);
             rrcFilt.init(&dcBlock.out, rrcTaps);
@@ -115,6 +122,7 @@ namespace demod {
             st.slot0_type = dmr_st.dmr_status_s0_lasttype;
             st.slot1_type = dmr_st.dmr_status_s1_lasttype;
             st.mbe_errorbar = mbe_st.mbe_status_errorbar;
+            st.offset_hz = quadDemod.offsetHz;
             return st;
         }
 
@@ -260,7 +268,7 @@ namespace demod {
             }
         }
 
-        void setBandwidth(double bandwidth) {}
+        void setBandwidth(double bandwidth) { bw = bandwidth; }
 
         void setInput(dsp::stream<dsp::complex_t>* input) {
             quadDemod.setInput(input);
@@ -274,9 +282,9 @@ namespace demod {
         double getIFSampleRate() { return INSR; }
         double getAFSampleRate() { return 8000.0; }
         double getDefaultBandwidth() { return bw; }
-        double getMinBandwidth() { return 3000.0; }
-        double getMaxBandwidth() { return 12500.0; }
-        bool getBandwidthLocked() { return true; }
+        double getMinBandwidth() { return 6000.0; }
+        double getMaxBandwidth() { return 20000.0; }
+        bool getBandwidthLocked() { return false; }
         double getMaxAFBandwidth() { return 4000.0; }
         double getDefaultSnapInterval() { return 500.0; }
         int getVFOReference() { return ImGui::WaterfallVFO::REF_CENTER; }
@@ -303,12 +311,12 @@ namespace demod {
             }
         }
 
-        float bw = 12500.0;
+        float bw = 16000.0;   // folga para o erro de ppm; o filtro do canal fica no AFC
 
         inline static std::mutex registryMtx;
         inline static std::unordered_map<std::string, DSD*> instances;
 
-        dsp::demod::Quadrature quadDemod;
+        dsp::AFCQuadrature quadDemod;
         dsp::correction::DCBlocker<float> dcBlock;
         dsp::filter::FIR<float, float> rrcFilt;
         dsp::tap<float> rrcTaps;

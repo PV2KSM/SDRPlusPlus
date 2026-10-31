@@ -252,7 +252,7 @@ namespace workspaces {
         case RADIO_IFACE_MODE_USB:
         case RADIO_IFACE_MODE_LSB: return { 1800, 2400, 2700, 3000 };
         case RADIO_IFACE_MODE_CW: return { 200, 500, 800 };
-        case MODE_DSD: return { 12500 };
+        case MODE_DSD: return { 10000, 12500, 16000, 20000 };
         default: return {};
         }
     }
@@ -359,6 +359,7 @@ namespace workspaces {
         int acarsMsgs = 0;
         std::string acarsLast;
         bool dmrSync = false;
+        int dmrOffset = 0;
         std::string dmrInfo;
     };
     static Status status;
@@ -401,8 +402,15 @@ namespace workspaces {
                 bool sync = j.contains("sync") && j["sync"].is_boolean() && j["sync"].get<bool>();
                 bool voice = j.contains("voice") && j["voice"].is_boolean() && j["voice"].get<bool>();
                 int cc = (j.contains("color_code") && j["color_code"].is_number()) ? j["color_code"].get<int>() : -1;
+                int off = (j.contains("offset_hz") && j["offset_hz"].is_number()) ? j["offset_hz"].get<int>() : 0;
                 s.dmrSync = sync;
+                s.dmrOffset = off;
                 s.dmrInfo = std::string(voice ? "voz" : "sincronizado") + (cc >= 0 ? " · CC " + std::to_string(cc) : "");
+                if (std::abs(off) >= 300) {
+                    char b[48];
+                    snprintf(b, sizeof(b), " · AFC %+.1f kHz", off / 1000.0);
+                    s.dmrInfo += b;
+                }
                 break;
             }
         }
@@ -500,6 +508,73 @@ namespace workspaces {
         ImGui::Dummy(ImVec2(totalW, h));
     }
 
+    // Procura o sinal mais forte perto do Rádio (na última linha do espectro) e
+    // sintoniza no centro dele. Resolve o RTL-SDR com erro de ppm, quando o sinal
+    // aparece alguns kHz ao lado da frequência certa.
+    static std::string centerMsg;
+    static double centerMsgAt = -100;
+    static void centerOnSignal(float bw) {
+        if (!sigpath::vfoManager.vfoExists(RADIO_VFO)) { return; }
+        // DMR: o AFC do decodificador já mediu o erro com precisão
+        if (getMode() == MODE_DSD && std::abs(status.dmrOffset) >= 200) {
+            double f0 = gui::waterfall.getCenterFrequency() + sigpath::vfoManager.getOffset(RADIO_VFO);
+            double f = std::round((f0 + status.dmrOffset) / 100.0) * 100.0;
+            tuner::tune(tuner::TUNER_MODE_NORMAL, RADIO_VFO, f);
+            char buf[96];
+            snprintf(buf, sizeof(buf), "DMR em %.4f MHz (AFC %+.1f kHz)", f / 1e6, status.dmrOffset / 1000.0);
+            centerMsg = buf;
+            centerMsgAt = nowSec();
+            return;
+        }
+        int width = 0;
+        float* fft = gui::waterfall.acquireLatestFFT(width);
+        if (!fft || width < 16) {
+            gui::waterfall.releaseLatestFFT();
+            return;
+        }
+        std::vector<float> row(fft, fft + width);
+        gui::waterfall.releaseLatestFFT();
+        double center = gui::waterfall.getCenterFrequency();
+        double viewBw = gui::waterfall.getViewBandwidth();
+        double start = center + gui::waterfall.getViewOffset() - viewBw / 2.0;
+        double hzPerPx = viewBw / width;
+        double f0 = center + sigpath::vfoManager.getOffset(RADIO_VFO);
+        std::vector<float> sorted(row);
+        std::nth_element(sorted.begin(), sorted.begin() + width / 2, sorted.end());
+        float floorDb = sorted[width / 2];
+        double span = (std::max)(25000.0, (double)bw * 2.0);
+        int a = (int)std::floor((f0 - span - start) / hzPerPx), b = (int)std::ceil((f0 + span - start) / hzPerPx);
+        a = (std::max)(a, 0);
+        b = (std::min)(b, width - 1);
+        int best = -1;
+        for (int i = a; i <= b; i++) {
+            if (best < 0 || row[i] > row[best]) { best = i; }
+        }
+        if (best < 0 || row[best] < floorDb + 8.0f) {
+            centerMsg = "Nenhum sinal forte perto";
+            centerMsgAt = nowSec();
+            return;
+        }
+        // região contínua acima do ruído em volta do pico; centro pela potência
+        float thr = (std::max)(floorDb + 4.0f, row[best] - 20.0f);
+        int l = best, r = best;
+        while (l > a && row[l - 1] > thr) { l--; }
+        while (r < b && row[r + 1] > thr) { r++; }
+        double sw = 0, sf = 0;
+        for (int i = l; i <= r; i++) {
+            double p = std::pow(10.0, (row[i] - floorDb) / 10.0);
+            sw += p;
+            sf += p * (start + (i + 0.5) * hzPerPx);
+        }
+        double f = std::round((sf / sw) / 100.0) * 100.0;
+        tuner::tune(tuner::TUNER_MODE_NORMAL, RADIO_VFO, f);
+        char buf[96];
+        snprintf(buf, sizeof(buf), "Sinal em %.4f MHz (%+.1f kHz)", f / 1e6, (f - f0) / 1000.0);
+        centerMsg = buf;
+        centerMsgAt = nowSec();
+        flog::info("Centralizar: {}", centerMsg);
+    }
+
     static void drawModeAndBandwidth(bool compact) {
         refreshModes();
         int mode = getMode();
@@ -575,6 +650,14 @@ namespace workspaces {
         }
         if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Arraste ou dê duplo clique para digitar.\nA largura fica salva para este modo nesta aba."); }
         ImGui::PopStyleVar(2);
+
+        // ---- centralizar no sinal (erro de ppm do RTL-SDR)
+        flowNext(chipWidth("CENTRALIZAR"), sp);
+        if (chip("##center_sig", "CENTRALIZAR", false)) { centerOnSignal(bw); }
+        if (ImGui::IsItemHovered()) {
+            if (nowSec() - centerMsgAt < 6 && !centerMsg.empty()) { ImGui::SetTooltip("%s", centerMsg.c_str()); }
+            else { ImGui::SetTooltip("Sintoniza o Rádio no centro do sinal mais forte por perto.\nÚtil quando o RTL-SDR tem erro de ppm e o sinal aparece ao lado."); }
+        }
 
         // ---- squelch
         if (radioExists()) {
@@ -690,6 +773,7 @@ namespace workspaces {
         std::string ms = m ? modeLabel(*m) : std::string("-");
         item(BLUE, LABELS[cur], std::string(fbuf) + "  " + ms + "  " + bwText(getBandwidth()));
 
+        if (nowSec() - centerMsgAt < 6 && !centerMsg.empty()) { item(AMBER, "Centralizar", centerMsg); }
         if (status.scanning) {
             std::string v = status.receiving ? "recebendo" : (status.holding ? "segurando" : "procurando");
             if (!status.station.empty() && (status.receiving || status.holding)) { v += " · " + status.station; }

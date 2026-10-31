@@ -883,8 +883,12 @@ jobs:
           if: failure()
           run: |
             L=${{runner.workspace}}/android_build.log
-            grep -E "error:|Error:|CMake Error|FAILED|undefined reference|fatal" "$L" | grep -v "^\s*$" | head -40 | while IFS= read -r line; do echo "::error::${line:0:900}"; done
-            tail -25 "$L" | while IFS= read -r line; do echo "::warning::${line:0:900}"; done
+            # GitHub mostra no máximo 10 anotações por passo: junta cada erro com o contexto numa só
+            grep -n -E "CMake Error|error:|undefined reference|fatal error" "$L" | head -8 | cut -d: -f1 | while read n; do
+              msg=$(sed -n "$((n)),$((n+8))p" "$L" | cut -c1-300 | sed ':a;N;$!ba;s/\n/%0A/g')
+              echo "::error::$msg"
+            done
+            echo "::warning::$(tail -15 "$L" | cut -c1-200 | sed ':a;N;$!ba;s/\n/%0A/g')"
 
         - name: Recover APK
           working-directory: ${{runner.workspace}}

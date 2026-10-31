@@ -257,7 +257,8 @@ private:
                ",\"slot1_burst\":" + std::to_string(st.slot1_burst) +
                ",\"slot0_type\":\"" + escapeJson(st.slot0_type) +
                "\",\"slot1_type\":\"" + escapeJson(st.slot1_type) +
-               "\",\"mbe_errorbar\":\"" + escapeJson(st.mbe_errorbar) + "\"}";
+               "\",\"mbe_errorbar\":\"" + escapeJson(st.mbe_errorbar) +
+               "\",\"offset_hz\":" + std::to_string((int)st.offset_hz) + "}";
     }
 
     static void menuHandler(void* ctx) {
