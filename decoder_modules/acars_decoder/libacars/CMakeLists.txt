@@ -37,26 +37,25 @@ set(LA_CORE_SOURCES
 list(TRANSFORM LA_CORE_SOURCES PREPEND "${LA_DIR}/")
 list(TRANSFORM ASN_MODULE_SOURCES PREPEND "${LA_DIR}/asn1/")
 
-add_library(sdrpp_libacars_asn1 OBJECT ${ASN_MODULE_SOURCES})
-add_library(sdrpp_libacars STATIC ${LA_CORE_SOURCES} "${LA_GEN}/version.c" $<TARGET_OBJECTS:sdrpp_libacars_asn1>)
+# Uma única biblioteca estática (sem bibliotecas OBJECT: o gerador do Android/Ninja
+# não as suporta bem — "produces multiple outputs"). O CMake preserva a subpasta
+# de cada fonte, então os nomes iguais em asn1/ e na raiz não colidem.
+add_library(sdrpp_libacars STATIC ${LA_CORE_SOURCES} ${ASN_MODULE_SOURCES} "${LA_GEN}/version.c")
 
-foreach (T sdrpp_libacars_asn1 sdrpp_libacars)
-    set_property(TARGET ${T} PROPERTY POSITION_INDEPENDENT_CODE ON)
-    set_property(TARGET ${T} PROPERTY C_STANDARD 11)
-    # PUBLIC só a raiz (para <libacars/...>); o config.h gerado fica PRIVATE para não
-    # colidir com o config.h do SDR++
-    target_include_directories(${T} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_include_directories(${T} PRIVATE "${LA_GEN}" "${LA_DIR}" "${LA_DIR}/asn1")
-    if (MSVC)
-        target_compile_definitions(${T} PRIVATE _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
-        target_compile_options(${T} PRIVATE /w)
-    else ()
-        target_compile_options(${T} PRIVATE -w)
-    endif ()
-endforeach ()
+set_property(TARGET sdrpp_libacars PROPERTY POSITION_INDEPENDENT_CODE ON)
+set_property(TARGET sdrpp_libacars PROPERTY C_STANDARD 11)
+# PUBLIC só a raiz (para <libacars/...>); o config.h gerado fica PRIVATE para não
+# colidir com o config.h do SDR++
+target_include_directories(sdrpp_libacars PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_include_directories(sdrpp_libacars PRIVATE "${LA_GEN}" "${LA_DIR}" "${LA_DIR}/asn1")
+if (MSVC)
+    target_compile_definitions(sdrpp_libacars PRIVATE _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_DEPRECATE)
+    target_compile_options(sdrpp_libacars PRIVATE /w)
+else ()
+    target_compile_options(sdrpp_libacars PRIVATE -w)
+endif ()
 # strdup, strtok_r, strnlen, strsep (mesmas definições do projeto original)
 target_compile_definitions(sdrpp_libacars PRIVATE _XOPEN_SOURCE=600 _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)
-target_compile_definitions(sdrpp_libacars_asn1 PRIVATE _DEFAULT_SOURCE)
 if (APPLE)
     target_compile_definitions(sdrpp_libacars PRIVATE _DARWIN_C_SOURCE)
 endif ()
