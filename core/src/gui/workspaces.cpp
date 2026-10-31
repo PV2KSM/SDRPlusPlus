@@ -360,6 +360,7 @@ namespace workspaces {
         std::string acarsLast;
         bool dmrSync = false;
         int dmrOffset = 0;
+        std::string dmrLast;
         std::string dmrInfo;
     };
     static Status status;
@@ -406,6 +407,22 @@ namespace workspaces {
                 s.dmrSync = sync;
                 s.dmrOffset = off;
                 s.dmrInfo = std::string(voice ? "voz" : "sincronizado") + (cc >= 0 ? " · CC " + std::to_string(cc) : "");
+                // última chamada identificada (talkgroup/ID) — mostrada por 15 s
+                static uint32_t lastLcCount = 0;
+                static double lastLcAt = -100;
+                uint32_t lcCount = (j.contains("lc_count") && j["lc_count"].is_number()) ? j["lc_count"].get<uint32_t>() : 0;
+                if (lcCount != lastLcCount) { lastLcCount = lcCount; lastLcAt = nowSec(); }
+                if (lcCount > 0 && (sync || nowSec() - lastLcAt < 15)) {
+                    bool grp = !j.contains("group") || !j["group"].is_boolean() || j["group"].get<bool>();
+                    uint32_t dst = j.value("dst", 0u), src = j.value("src", 0u);
+                    int slot = j.value("lc_slot", -1);
+                    std::string call = std::string(grp ? "TG " : "ID ") + std::to_string(dst) + " <- " + std::to_string(src);
+                    if (slot >= 0) { call += " (slot " + std::to_string(slot + 1) + ")"; }
+                    if (j.contains("emergency") && j["emergency"].is_boolean() && j["emergency"].get<bool>()) { call += " EMERGÊNCIA"; }
+                    if (j.contains("privacy") && j["privacy"].is_boolean() && j["privacy"].get<bool>()) { call += " (criptografada)"; }
+                    s.dmrInfo += " · " + call;
+                    s.dmrLast = call;
+                }
                 if (std::abs(off) >= 300) {
                     char b[48];
                     snprintf(b, sizeof(b), " · AFC %+.1f kHz", off / 1000.0);
@@ -783,7 +800,7 @@ namespace workspaces {
             item(GRAY, "Scanner", "parado");
         }
         if (mode == MODE_DSD) {
-            item(status.dmrSync ? GREEN : GRAY, "DMR", status.dmrSync ? status.dmrInfo : std::string("sem sinal"));
+            item(status.dmrSync ? GREEN : GRAY, "DMR", status.dmrSync ? status.dmrInfo : (status.dmrLast.empty() ? std::string("sem sinal") : "sem sinal · última " + status.dmrLast));
         }
         if (cur != HAM) {
             if (instanceOf("adsb_decoder")) {

@@ -61,6 +61,10 @@ namespace demod {
             std::string slot1_type = "";
             std::string mbe_errorbar = "";
             float offset_hz = 0;      // erro de frequência corrigido pelo AFC
+            uint32_t src = 0, dst = 0;  // última chamada (LC)
+            bool group = true, emergency = false, privacy = false;
+            int lc_slot = -1;
+            uint32_t lc_count = 0;
         };
 
         DSD() {}
@@ -123,6 +127,13 @@ namespace demod {
             st.slot1_type = dmr_st.dmr_status_s1_lasttype;
             st.mbe_errorbar = mbe_st.mbe_status_errorbar;
             st.offset_hz = quadDemod.offsetHz;
+            st.src = dmr_st.dmr_status_src;
+            st.dst = dmr_st.dmr_status_dst;
+            st.group = dmr_st.dmr_status_group;
+            st.emergency = dmr_st.dmr_status_emergency;
+            st.privacy = dmr_st.dmr_status_privacy;
+            st.lc_slot = dmr_st.dmr_status_lc_slot;
+            st.lc_count = dmr_st.dmr_status_lc_count;
             return st;
         }
 
@@ -263,6 +274,19 @@ namespace demod {
             }
             dsp::NewDSD::MBE_status mbe_st = decoder.getMBEStatus();
             ImGui::TextColored((mbe_st.mbe_status_decoding ? ImVec4(0.4f, 1.0f, 0.4f, 1.0f) : ImVec4(1.0f, 0.4f, 0.4f, 1.0f)), "MBE ERR: %s", mbe_st.mbe_status_errorbar.c_str());
+            {
+                dsp::NewDSD::DMR_status lc = decoder.getDMRStatus();
+                if (lc.dmr_status_lc_count > 0) {
+                    ImVec4 amber(0.96f, 0.69f, 0.25f, 1.0f);
+                    ImGui::TextColored(amber, "Última chamada (slot %d):", lc.dmr_status_lc_slot + 1);
+                    ImGui::TextColored(amber, "%s %u  <-  ID %u", lc.dmr_status_group ? "TG" : "Privada", lc.dmr_status_dst, lc.dmr_status_src);
+                    if (lc.dmr_status_emergency || lc.dmr_status_privacy) {
+                        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s%s", lc.dmr_status_emergency ? "EMERGÊNCIA  " : "",
+                                           lc.dmr_status_privacy ? "criptografada (sem áudio)" : "");
+                    }
+                }
+                ImGui::Text("AFC: %+.0f Hz", (float)quadDemod.offsetHz);
+            }
             if (!fr_st.sync) {
                 style::endDisabled();
             }

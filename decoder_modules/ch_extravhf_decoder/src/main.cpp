@@ -258,7 +258,11 @@ private:
                ",\"slot0_type\":\"" + escapeJson(st.slot0_type) +
                "\",\"slot1_type\":\"" + escapeJson(st.slot1_type) +
                "\",\"mbe_errorbar\":\"" + escapeJson(st.mbe_errorbar) +
-               "\",\"offset_hz\":" + std::to_string((int)st.offset_hz) + "}";
+               "\",\"offset_hz\":" + std::to_string((int)st.offset_hz) +
+               ",\"src\":" + std::to_string(st.src) + ",\"dst\":" + std::to_string(st.dst) +
+               ",\"group\":" + (st.group ? "true" : "false") + ",\"emergency\":" + (st.emergency ? "true" : "false") +
+               ",\"privacy\":" + (st.privacy ? "true" : "false") + ",\"lc_slot\":" + std::to_string(st.lc_slot) +
+               ",\"lc_count\":" + std::to_string(st.lc_count) + "}";
     }
 
     static void menuHandler(void* ctx) {

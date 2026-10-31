@@ -1,4 +1,5 @@
 #include "dsd.h"
+#include "dmr_lc.h"
 
 namespace dsp { 
 
@@ -20,14 +21,17 @@ namespace dsp {
                     currentslot = (1 & (dibit >> 1));      // bit 1
                 }
             }
+            // primeira metade da informação (para o LC)
+            for (int i = 0; i < 55; i++) { dmr_lc_win1[i] = dibitBuf[dmr_dibitBuffP - 3 + i]; }
             dmr_dibitBuffP += 49;
             int dibit = dibitBuf[dmr_dibitBuffP++];
-            cc |= ((1 & (dibit >> 1))) << 0; //bit1
-            cc |= (1 & dibit) << 1;     // bit 0
+            // color code vem com o bit mais significativo primeiro (ETSI); antes saía invertido (5 virava 10)
+            cc |= ((1 & (dibit >> 1))) << 3; //bit1
+            cc |= (1 & dibit) << 2;     // bit 0
 
             dibit = dibitBuf[dmr_dibitBuffP++];
-            cc |= (1 & (dibit >> 1)) << 2;      // bit 1
-            cc |= (1 & dibit) << 3;     // bit 0
+            cc |= (1 & (dibit >> 1)) << 1;      // bit 1
+            cc |= (1 & dibit) << 0;     // bit 0
 
             dmr_status.dmr_status_cc = cc;
 
@@ -43,6 +47,8 @@ namespace dsp {
             dibit = dibitBuf[dmr_dibitBuffP++];
 
             ((currentslot == 0) ? dmr_status.dmr_status_s0_lastburstt : dmr_status.dmr_status_s1_lastburstt) = strtol(bursttype, NULL, 2);
+            dmr_lc_slot = currentslot;
+            dmr_lc_type = (int)strtol(bursttype, NULL, 2);
 
             if (strcmp (bursttype, "0000") == 0) {
                 ((currentslot == 0) ? dmr_status.dmr_status_s0_lasttype : dmr_status.dmr_status_s1_lasttype) = "PI Header";
@@ -89,6 +95,35 @@ namespace dsp {
                 dibitBuf[fss_dibitBufP++] = in[i];
                 usedDibits++;
                 skipCtr++;
+                // segunda metade da informação: depois dos 5 dibits de slot type
+                if (skipCtr <= 60) { dmr_lc_win2[skipCtr - 1] = in[i]; }
+                if (skipCtr == 60 && (dmr_lc_type == 1 || dmr_lc_type == 2)) {
+                    // alinhamento: tenta deslocamentos pequenos e as duas ordens de bit
+                    // do dibit; o Reed-Solomon só aceita o certo
+                    dmr::LC lc;
+                    for (int sh = 0; sh <= 6 && !lc.valid; sh++) {
+                        int s = (sh % 2) ? -(sh + 1) / 2 : sh / 2;   // 0, -1, 1, -2, 2, -3, 3
+                        for (int sw = 0; sw < 2 && !lc.valid; sw++) {
+                            for (int k = 0; k < 49; k++) {
+                                uint8_t a = dmr_lc_win1[3 + s + k], b = dmr_lc_win2[5 + s + k];
+                                if (sw) { a = (uint8_t)(((a & 1) << 1) | ((a >> 1) & 1)); b = (uint8_t)(((b & 1) << 1) | ((b >> 1) & 1)); }
+                                dmr_lc_dibits[k] = a;
+                                dmr_lc_dibits[49 + k] = b;
+                            }
+                            lc = dmr::decodeLC(dmr_lc_dibits, dmr_lc_type);
+                            if (lc.valid) { dmr_lc_align = s * 2 + sw; }
+                        }
+                    }
+                    if (lc.valid && (lc.flco == 0 || lc.flco == 3)) {
+                        dmr_status.dmr_status_src = lc.src;
+                        dmr_status.dmr_status_dst = lc.dst;
+                        dmr_status.dmr_status_group = (lc.flco == 0);
+                        dmr_status.dmr_status_emergency = (lc.options & 0x80) != 0;
+                        dmr_status.dmr_status_privacy = (lc.options & 0x40) != 0;
+                        dmr_status.dmr_status_lc_slot = dmr_lc_slot;
+                        dmr_status.dmr_status_lc_count++;
+                    }
+                }
                 if(skipCtr == 120) {
                     curr_state = STATE_SYNC;
                     break;

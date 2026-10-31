@@ -100,6 +100,14 @@ namespace dsp {
             std::string dmr_status_s0_lasttype = "";
             std::string dmr_status_s1_lasttype = "";
             uint8_t dmr_status_cc = 0;
+            // última chamada identificada (Voice LC Header / Terminator)
+            uint32_t dmr_status_src = 0;
+            uint32_t dmr_status_dst = 0;
+            bool dmr_status_group = true;
+            bool dmr_status_emergency = false;
+            bool dmr_status_privacy = false;
+            int dmr_status_lc_slot = -1;
+            uint32_t dmr_status_lc_count = 0;   // aumenta a cada LC válido
         };
         struct P25_status {
             int p25_status_src = 0;
@@ -237,6 +245,12 @@ namespace dsp {
 
         //DMR
         DMR_status dmr_status;
+        uint8_t dmr_lc_dibits[98];
+        uint8_t dmr_lc_win1[55];
+        uint8_t dmr_lc_win2[60];
+        int dmr_lc_align = 0;
+        int dmr_lc_slot = 0;
+        int dmr_lc_type = -1;
 
         int dmr_dibitBuffP = 0;
         int processDMRdata(int count, const uint8_t* in);
