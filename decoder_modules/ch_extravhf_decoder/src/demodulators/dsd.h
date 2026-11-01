@@ -274,7 +274,8 @@ namespace demod {
                 ImGui::Text("SRC     : %u", p25_st.p25_status_src);
                 ImGui::Text("TG       : (id %u) %u (others %u %u %u)", p25_st.p25_status_tgid, p25_st.p25_status_tg, p25_st.p25_status_othertg1, p25_st.p25_status_othertg2, p25_st.p25_status_othertg3);
                 ImGui::Text("ALGID : 0x%02x", p25_st.p25_status_algid);
-                if (p25_st.p25_status_algid != 0x80) {
+                // ALGID 0 aparece em quadros sem voz (ex.: TSDU do canal de controle): não é criptografia
+                if (p25_st.p25_status_algid != 0x80 && p25_st.p25_status_algid != 0x00) {
                     // Encrypted
                     ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "ENCR? KID: 0x%04x", p25_st.p25_status_kid);
                 }
