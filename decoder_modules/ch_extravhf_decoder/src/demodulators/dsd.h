@@ -25,12 +25,13 @@
 
 #define CONCAT(a, b) ((std::string(a) + b).c_str())
 
-// 5 amostras por símbolo: com 9600 a faixa de 12,5 kHz do DMR era cortada/rebatida
-#define INSR                   (4800.0f * 5)
+// 12 amostras por símbolo (57,6 kHz): cabe um VFO de até 50 kHz, para achar
+// sinais bem fora do centro (erro de ppm grande); o filtro do canal fica no AFC
+#define INSR                   (4800.0f * 12)
 #define CLOCK_RECOVERY_BW      0.1f
 #define CLOCK_RECOVERY_DAMPN_F 1.0f
 #define CLOCK_RECOVERY_REL_LIM 0.001f
-#define RRC_TAP_COUNT          65
+#define RRC_TAP_COUNT          157
 #define RRC_ALPHA              0.23f
 #ifndef AFC_CUTOFF
 #define AFC_CUTOFF             4200.0
@@ -65,6 +66,13 @@ namespace demod {
             bool group = true, emergency = false, privacy = false;
             int lc_slot = -1;
             uint32_t lc_count = 0;
+            // P25 fase 1
+            bool p25 = false;
+            int p25_nac = 0;
+            uint32_t p25_tg = 0, p25_src = 0;
+            int p25_algid = 0x80;
+            bool p25_emergency = false;
+            std::string p25_type;
         };
 
         DSD() {}
@@ -91,7 +99,8 @@ namespace demod {
             float recov_mu = (4.0f * recov_dampningFactor * recov_bandwidth) / recov_denominator;
             float recov_omega = (4.0f * recov_bandwidth * recov_bandwidth) / recov_denominator;
             // FM com AFC: segue até 7 kHz de erro do RTL-SDR e filtra só o canal 4FSK
-            quadDemod.init(input, 1944.0f, INSR, AFC_CUTOFF, 6000.0);
+            if (bandwidth > 0) { bw = (float)bandwidth; }
+            quadDemod.init(input, 1944.0f, INSR, AFC_CUTOFF, afcMaxOffset(bw));
             dcBlock.init(&quadDemod.out, 1.0f / INSR);
             rrcTaps = dsp::taps::rootRaisedCosine<float>(RRC_TAP_COUNT, RRC_ALPHA, 4800.0f, INSR);
             rrcFilt.init(&dcBlock.out, rrcTaps);
@@ -134,6 +143,14 @@ namespace demod {
             st.privacy = dmr_st.dmr_status_privacy;
             st.lc_slot = dmr_st.dmr_status_lc_slot;
             st.lc_count = dmr_st.dmr_status_lc_count;
+            dsp::NewDSD::P25_status p25_st = decoder.getP25Status();
+            st.p25 = (fr_st.lasttype == dsp::NewDSD::Frame_status::LAST_P25);
+            st.p25_nac = p25_st.p25_status_nac;
+            st.p25_tg = (uint32_t)p25_st.p25_status_tg;
+            st.p25_src = (uint32_t)p25_st.p25_status_src;
+            st.p25_algid = p25_st.p25_status_algid;
+            st.p25_emergency = p25_st.p25_status_emr;
+            st.p25_type = p25_st.p25_status_lasttype;
             return st;
         }
 
@@ -144,6 +161,29 @@ namespace demod {
                 return false;
             }
             out = it->second->getDebugStatus();
+            return true;
+        }
+
+        static bool getP25ViewForRadio(const std::string& radioName, dsp::p25::System::View& out) {
+            std::lock_guard<std::mutex> lock(registryMtx);
+            auto it = instances.find(radioName);
+            if (it == instances.end() || !it->second) {
+                return false;
+            }
+            double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            out = it->second->decoder.p25sys.view(now);
+            return true;
+        }
+
+        // Canal de controle P25 (sistema, frequências, concessões) em JSON
+        static bool getP25SystemForRadio(const std::string& radioName, std::string& out) {
+            std::lock_guard<std::mutex> lock(registryMtx);
+            auto it = instances.find(radioName);
+            if (it == instances.end() || !it->second) {
+                return false;
+            }
+            double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            out = it->second->decoder.p25sys.json(now);
             return true;
         }
 
@@ -292,7 +332,13 @@ namespace demod {
             }
         }
 
-        void setBandwidth(double bandwidth) { bw = bandwidth; }
+        void setBandwidth(double bandwidth) {
+            bw = bandwidth;
+            quadDemod.setMaxOffset(afcMaxOffset(bw));
+        }
+
+        // O AFC alcança até a borda da faixa do VFO (menos meio canal), no mínimo 6 kHz
+        static double afcMaxOffset(double bandwidth) { return (std::max)(6000.0, bandwidth / 2.0 - 4000.0); }
 
         void setInput(dsp::stream<dsp::complex_t>* input) {
             quadDemod.setInput(input);
@@ -306,8 +352,8 @@ namespace demod {
         double getIFSampleRate() { return INSR; }
         double getAFSampleRate() { return 8000.0; }
         double getDefaultBandwidth() { return bw; }
-        double getMinBandwidth() { return 6000.0; }
-        double getMaxBandwidth() { return 20000.0; }
+        double getMinBandwidth() { return 5000.0; }
+        double getMaxBandwidth() { return 50000.0; }
         bool getBandwidthLocked() { return false; }
         double getMaxAFBandwidth() { return 4000.0; }
         double getDefaultSnapInterval() { return 500.0; }

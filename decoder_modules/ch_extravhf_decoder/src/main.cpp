@@ -26,7 +26,12 @@
 #include <core.h>
 #include <utils/optionlist.h>
 #include <chrono>
+#include <cmath>
+#include <gui/tuner.h>
+#include <gui/main_window.h>
+#include <utils/flog.h>
 #include "./demod.h"
+#include "demodulators/dsd.h"
 
 ConfigManager config;
 
@@ -39,11 +44,31 @@ public:
     std::string name;
 
     VhfVoiceRadioModule(std::string name) {
-
+        this->name = name;
+        config.acquire();
+        followTrunk = config.conf.value("followTrunk", false);
+        skipEncrypted = config.conf.value("skipEncrypted", true);
+        tgFilter = config.conf.value("tgFilter", std::string());
+        config.release();
+        gui::menu.registerEntry(name, menuHandler, this, NULL);
+        frameHandler.handler = onFrame;
+        frameHandler.ctx = this;
+        gui::mainWindow.onWaterfallDrawn.bindHandler(&frameHandler);
     }
 
     ~VhfVoiceRadioModule() {
+        gui::mainWindow.onWaterfallDrawn.unbindHandler(&frameHandler);
+        gui::menu.removeEntry(name);
     }
+
+    // P25 troncalizado
+    bool followTrunk = false;
+    bool skipEncrypted = true;
+    std::string tgFilter;
+    bool onVoice = false;
+    double ccFreq = 0, voiceFreq = 0, voiceStart = 0, lastActivity = 0, leftAt = -100;
+    uint32_t followTg = 0, followSrc = 0, lastTg = 0;
+    EventHandler<ImGuiContext*> frameHandler;
 
     EventHandler<std::string> moduleCreatedListener;
     EventHandler<std::string> moduleDeleteListener;
@@ -189,6 +214,14 @@ public:
             }
             return debugStatusToJson(st, 0, false);
         }
+        if (cmd == "get_p25_system") {
+            std::string radioName = args.empty() ? "Radio" : args;
+            std::string out;
+            if (!demod::DSD::getP25SystemForRadio(radioName, out)) {
+                return std::string("{\"error\": \"no active DSD demod for radio '") + radioName + "'\"}";
+            }
+            return out;
+        }
         if (cmd == "wait_dmr_sync_voice") {
             std::string radioName = "Radio";
             int stableMs = 2000;
@@ -262,13 +295,154 @@ private:
                ",\"src\":" + std::to_string(st.src) + ",\"dst\":" + std::to_string(st.dst) +
                ",\"group\":" + (st.group ? "true" : "false") + ",\"emergency\":" + (st.emergency ? "true" : "false") +
                ",\"privacy\":" + (st.privacy ? "true" : "false") + ",\"lc_slot\":" + std::to_string(st.lc_slot) +
-               ",\"lc_count\":" + std::to_string(st.lc_count) + "}";
+               ",\"lc_count\":" + std::to_string(st.lc_count) +
+               ",\"p25\":" + (st.p25 ? "true" : "false") + ",\"p25_nac\":" + std::to_string(st.p25_nac) +
+               ",\"p25_tg\":" + std::to_string(st.p25_tg) + ",\"p25_src\":" + std::to_string(st.p25_src) +
+               ",\"p25_algid\":" + std::to_string(st.p25_algid) + ",\"p25_emergency\":" + (st.p25_emergency ? "true" : "false") +
+               ",\"p25_type\":\"" + escapeJson(st.p25_type) + "\"}";
+    }
+
+    // ------------------------------------------------------------------ P25 troncalizado
+    // Segue as conversas: no canal de controle, quando sai uma concessão de voz
+    // (talkgroup -> frequência), o Rádio vai até ela; quando a conversa acaba,
+    // volta para o canal de controle.
+    static double nowSec() {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
+    bool tgAllowed(uint32_t tg) {
+        if (tgFilter.empty()) { return true; }
+        std::string f = tgFilter + ",";
+        size_t a = 0;
+        while (a < f.size()) {
+            size_t b = f.find(',', a);
+            std::string t = f.substr(a, b - a);
+            t.erase(0, t.find_first_not_of(' '));
+            if (!t.empty() && t.find_first_not_of("0123456789 ") == std::string::npos && (uint32_t)std::stoul(t) == tg) { return true; }
+            a = b + 1;
+        }
+        return false;
+    }
+
+    double radioFreq() {
+        if (!sigpath::vfoManager.vfoExists("Radio")) { return 0; }
+        return gui::waterfall.getCenterFrequency() + sigpath::vfoManager.getOffset("Radio");
+    }
+
+    static void onFrame(ImGuiContext* ctx, void* p) {
+        ((VhfVoiceRadioModule*)p)->followStep();
+    }
+
+    void followStep() {
+        if (!followTrunk) {
+            if (onVoice) { goBack(); }
+            return;
+        }
+        dsp::p25::System::View v;
+        if (!demod::DSD::getP25ViewForRadio("Radio", v)) { return; }
+        double now = nowSec();
+        if (!onVoice) {
+            if (!v.active) { return; }
+            ccFreq = radioFreq();
+            for (auto& g : v.grants) {
+                if (now - g.time > 1.0 || g.freq <= 0) { continue; }
+                if (std::fabs(g.freq - ccFreq) < 100) { continue; }
+                if (skipEncrypted && g.encrypted) { continue; }
+                if (!tgAllowed(g.group)) { continue; }
+                if (g.group == lastTg && now - leftAt < 1.0) { continue; }
+                followTg = g.group;
+                followSrc = g.source;
+                voiceFreq = g.freq;
+                onVoice = true;
+                voiceStart = lastActivity = now;
+                tuner::tune(tuner::TUNER_MODE_NORMAL, "Radio", g.freq);
+                char msg[96];
+                snprintf(msg, sizeof(msg), "P25: seguindo TG %u em %.4f MHz", g.group, g.freq / 1e6);
+                flog::info("{}", msg);
+                break;
+            }
+        }
+        else {
+            demod::DSD::DebugStatus st;
+            if (demod::DSD::getStatusForRadio("Radio", st) && st.sync && !(st.p25 && st.p25_type == "TSDU")) { lastActivity = now; }
+            if (now - lastActivity > 1.5 || now - voiceStart > 120) { goBack(); }
+        }
+    }
+
+    void goBack() {
+        onVoice = false;
+        lastTg = followTg;
+        leftAt = nowSec();
+        if (ccFreq > 0) { tuner::tune(tuner::TUNER_MODE_NORMAL, "Radio", ccFreq); }
+    }
+
+    void saveConfig() {
+        config.acquire();
+        config.conf["followTrunk"] = followTrunk;
+        config.conf["skipEncrypted"] = skipEncrypted;
+        config.conf["tgFilter"] = tgFilter;
+        config.release(true);
     }
 
     static void menuHandler(void* ctx) {
-        ImGui::Text("See new modes in Radio.");
-        ImGui::Text("These modes are provided");
-        ImGui::Text("for educational purposes.");
+        auto _this = (VhfVoiceRadioModule*)ctx;
+        float w = ImGui::GetContentRegionAvail().x;
+        dsp::p25::System::View v;
+        bool have = demod::DSD::getP25ViewForRadio("Radio", v);
+        ImVec4 dim = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
+        ImVec4 amber(0.96f, 0.69f, 0.25f, 1.0f);
+        if (!have) {
+            ImGui::PushTextWrapPos(0);
+            ImGui::TextColored(dim, "Escolha o modo DSD/DMR no Rádio e sintonize o canal de controle P25 do sistema.");
+            ImGui::PopTextWrapPos();
+            return;
+        }
+        if (v.tsbks == 0) {
+            ImGui::PushTextWrapPos(0);
+            ImGui::TextColored(dim, "Nenhum canal de controle P25 recebido. Sintonize a frequência de controle (sinal contínuo) do sistema troncalizado.");
+            ImGui::PopTextWrapPos();
+        }
+        else {
+            ImGui::TextColored(v.active ? ImVec4(0.27f, 0.82f, 0.47f, 1.0f) : dim, v.active ? "Canal de controle ativo" : "Canal de controle (sem sinal agora)");
+            ImGui::Text("Sistema %03X  WACN %05X", v.sysid, v.wacn);
+            ImGui::Text("RFSS %d  Site %d", v.rfss, v.site);
+            if (v.ccFreq > 0) { ImGui::Text("Controle: %.4f MHz", v.ccFreq / 1e6); }
+            ImGui::TextColored(dim, "%llu blocos de controle", (unsigned long long)v.tsbks);
+        }
+        ImGui::Separator();
+        if (ImGui::Checkbox("Seguir conversas##p25_follow", &_this->followTrunk)) { _this->saveConfig(); }
+        if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Vai para a frequência de voz quando um talkgroup recebe canal\ne volta para o controle quando a conversa termina."); }
+        if (ImGui::Checkbox("Pular criptografadas##p25_skipenc", &_this->skipEncrypted)) { _this->saveConfig(); }
+        char buf[128];
+        strncpy(buf, _this->tgFilter.c_str(), sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = 0;
+        ImGui::SetNextItemWidth(w);
+        if (ImGui::InputTextWithHint("##p25_tgs", "Só estes TGs (ex.: 1001, 1002); vazio = todos", buf, sizeof(buf))) {
+            _this->tgFilter = buf;
+            _this->saveConfig();
+        }
+        if (_this->onVoice) {
+            ImGui::TextColored(amber, "Ouvindo TG %u (origem %u) em %.4f MHz", _this->followTg, _this->followSrc, _this->voiceFreq / 1e6);
+        }
+        if (!v.grants.empty()) {
+            ImGui::Separator();
+            ImGui::TextColored(dim, "Conversas recentes (clique para ouvir):");
+            double now = nowSec();
+            int i = 0;
+            for (auto& g : v.grants) {
+                if (i >= 12) { break; }
+                char lbl[160];
+                double age = now - g.time;
+                snprintf(lbl, sizeof(lbl), "TG %-6u %s %s  há %.0fs%s%s##g%d", g.group,
+                         g.freq > 0 ? "" : "canal", g.freq > 0 ? (std::to_string(g.freq / 1e6).substr(0, 8) + " MHz").c_str() : std::to_string(g.channel).c_str(),
+                         age, g.encrypted ? "  [cripto]" : "", g.emergency ? "  [EMERG]" : "", i);
+                ImGui::PushStyleColor(ImGuiCol_Text, age < 3 ? amber : ImGui::GetStyle().Colors[ImGuiCol_Text]);
+                if (ImGui::Selectable(lbl, false) && g.freq > 0) { tuner::tune(tuner::TUNER_MODE_NORMAL, "Radio", g.freq); }
+                ImGui::PopStyleColor();
+                i++;
+            }
+        }
+        return;
     }
 
     bool enabled = true;

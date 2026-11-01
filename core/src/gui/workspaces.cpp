@@ -39,7 +39,7 @@ namespace workspaces {
     };
     static const std::set<std::string> HAM_MENUS = {
         "Source", "Radio", "Frequency Manager", "Recorder", "Noise Reduction logmmse", "Sinks",
-        "FT8/FT4 Decoder", "Scanner", "Band Plan"
+        "FT8/FT4 Decoder", "Scanner", "Band Plan", "VHF Digital Modes"
     };
 
     static Workspace cur = AVIATION;
@@ -62,7 +62,7 @@ namespace workspaces {
             { "ADS-B", "ADS-B · radar" }, { "ACARS", "ACARS · CPDLC" }, { "Band Plan", "Plano de bandas" },
             { "Display", "Tela" }, { "Theme", "Tema" }, { "VFO Color", "Cores dos VFOs" },
             { "Module Manager", "Módulos" }, { "Scanner", "Varredura de faixa" }, { "FT8/FT4 Decoder", "FT8 / FT4" },
-            { "VHF Digital Modes", "Modos digitais (DSD)" },
+            { "VHF Digital Modes", "P25 · DMR (troncalizado)" },
         };
         auto it = N.find(name);
         return it == N.end() ? name : it->second;
@@ -252,8 +252,23 @@ namespace workspaces {
         case RADIO_IFACE_MODE_USB:
         case RADIO_IFACE_MODE_LSB: return { 1800, 2400, 2700, 3000 };
         case RADIO_IFACE_MODE_CW: return { 200, 500, 800 };
-        case MODE_DSD: return { 10000, 12500, 16000, 20000 };
+        case MODE_DSD: return { 12500, 25000, 50000 };
         default: return {};
+        }
+    }
+
+    // Passo dos botões - / + de largura em cada modo
+    static float stepFor(int mode) {
+        switch (mode) {
+        case MODE_DSD: return 5000;
+        case RADIO_IFACE_MODE_WFM: return 25000;
+        case RADIO_IFACE_MODE_NFM: return 2500;
+        case RADIO_IFACE_MODE_AM:
+        case RADIO_IFACE_MODE_DSB: return 500;
+        case RADIO_IFACE_MODE_USB:
+        case RADIO_IFACE_MODE_LSB: return 100;
+        case RADIO_IFACE_MODE_CW: return 50;
+        default: return 1000;
         }
     }
 
@@ -361,6 +376,7 @@ namespace workspaces {
         bool dmrSync = false;
         int dmrOffset = 0;
         std::string dmrLast;
+        std::string digLabel = "DMR";
         std::string dmrInfo;
     };
     static Status status;
@@ -412,7 +428,26 @@ namespace workspaces {
                 static double lastLcAt = -100;
                 uint32_t lcCount = (j.contains("lc_count") && j["lc_count"].is_number()) ? j["lc_count"].get<uint32_t>() : 0;
                 if (lcCount != lastLcCount) { lastLcCount = lcCount; lastLcAt = nowSec(); }
-                if (lcCount > 0 && (sync || nowSec() - lastLcAt < 15)) {
+                bool isP25 = j.contains("p25") && j["p25"].is_boolean() && j["p25"].get<bool>();
+                s.digLabel = isP25 ? "P25" : "DMR";
+                if (isP25) {
+                    // P25: NAC, tipo de quadro e, na voz, talkgroup/origem
+                    int nac = j.value("p25_nac", 0);
+                    std::string type = (j.contains("p25_type") && j["p25_type"].is_string()) ? j["p25_type"].get<std::string>() : "";
+                    char b[32];
+                    snprintf(b, sizeof(b), "NAC %03X", nac);
+                    s.dmrInfo = std::string(type == "TSDU" ? "controle" : (voice ? "voz" : "sincronizado")) + " · " + b;
+                    uint32_t tg = j.value("p25_tg", 0u), src = j.value("p25_src", 0u);
+                    int alg = j.value("p25_algid", 0x80);
+                    if (type != "TSDU" && (tg || src)) {
+                        std::string call = "TG " + std::to_string(tg) + " <- " + std::to_string(src);
+                        if (alg != 0x80 && alg != 0) { call += " (criptografada)"; }
+                        if (j.contains("p25_emergency") && j["p25_emergency"].is_boolean() && j["p25_emergency"].get<bool>()) { call += " EMERGÊNCIA"; }
+                        s.dmrInfo += " · " + call;
+                        s.dmrLast = call;
+                    }
+                }
+                else if (lcCount > 0 && (sync || nowSec() - lastLcAt < 15)) {
                     bool grp = !j.contains("group") || !j["group"].is_boolean() || j["group"].get<bool>();
                     uint32_t dst = j.value("dst", 0u), src = j.value("src", 0u);
                     int slot = j.value("lc_slot", -1);
@@ -650,6 +685,25 @@ namespace workspaces {
                 watchedBw = p;
             }
         }
+        // passo - / + (DMR: de 5 em 5 kHz, até 50 kHz)
+        {
+            float st = stepFor(mode);
+            std::string lbl = "-" + bwText(st), lbl2 = "+" + bwText(st);
+            flowNext(chipWidth(lbl) + chipWidth(lbl2) + sp, sp);
+            auto apply = [&](float v) {
+                v = std::round(v / st) * st;
+                v = (std::max)(lo, (std::min)(hi, v));
+                setBandwidth(v);
+                storeBandwidth(cur, mode, v);
+                watchedBw = v;
+            };
+            if (chip("##bw_minus", lbl, false)) { apply(bw - st); }
+            if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Diminui %s", bwText(st).c_str()); }
+            ImGui::SameLine(0, sp);
+            if (chip("##bw_plus", lbl2, false)) { apply(bw + st); }
+            if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Aumenta %s (máximo %s)", bwText(st).c_str(), bwText(hi).c_str()); }
+        }
+
         // ajuste fino em kHz
         float w = 92.0f * style::uiScale;
         flowNext(w, sp);
@@ -800,7 +854,7 @@ namespace workspaces {
             item(GRAY, "Scanner", "parado");
         }
         if (mode == MODE_DSD) {
-            item(status.dmrSync ? GREEN : GRAY, "DMR", status.dmrSync ? status.dmrInfo : (status.dmrLast.empty() ? std::string("sem sinal") : "sem sinal · última " + status.dmrLast));
+            item(status.dmrSync ? GREEN : GRAY, status.digLabel, status.dmrSync ? status.dmrInfo : (status.dmrLast.empty() ? std::string("sem sinal") : "sem sinal · última " + status.dmrLast));
         }
         if (cur != HAM) {
             if (instanceOf("adsb_decoder")) {

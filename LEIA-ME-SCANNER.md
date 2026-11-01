@@ -58,6 +58,25 @@ Ao trocar de aba, o scanner, o ADS-B e o ACARS param (o RTL-SDR tem um sintoniza
 O tema novo **Simples** (escuro, cantos arredondados) é o padrão; os temas antigos
 continuam no menu Theme, dentro de Explorar.
 
+## DMR e P25
+
+- **Largura do DMR/P25 de 5 em 5 kHz até 50 kHz** (botões `-5k` / `+5k` e
+  atalhos 12,5k / 25k / 50k na faixa de controle). Com a faixa larga, o AFC
+  encontra sinais até ~20 kHz fora do centro (erro de ppm grande do RTL-SDR) e
+  filtra só o canal depois de achar.
+- **AFC** (correção automática de frequência): a barra de status mostra quanto
+  está corrigindo; **CENTRALIZAR** leva o Rádio ao centro do sinal.
+- **DMR:** talkgroup, ID de origem, slot, emergência e criptografia.
+- **P25 fase 1:** NAC, talkgroup/origem, criptografia e emergência na barra de
+  status.
+- **P25 troncalizado (painel "P25 · DMR"):** sintonize o **canal de controle** do
+  sistema; o painel mostra Sistema/WACN/RFSS/Site, a frequência de controle e as
+  **conversas recentes** (talkgroup → frequência). Clique numa para ouvir, ou
+  ligue **Seguir conversas**: o Rádio vai para a frequência de voz quando um
+  talkgroup recebe canal e volta para o controle quando a conversa acaba. Dá para
+  limitar a alguns TGs e pular as criptografadas.
+- Ainda não: P25 **fase 2** (TDMA) e modulação **CQPSK/LSM** (simulcast).
+
 ## ACARS e CPDLC (aba Aviação)
 
 Painel **ACARS · CPDLC**: decodifica **vários canais ACARS ao mesmo tempo**

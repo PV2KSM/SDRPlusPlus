@@ -1,5 +1,6 @@
 
 #include "dsd.h"
+#include <chrono>
 
 namespace dsp { 
 
@@ -1425,6 +1426,28 @@ namespace dsp {
             for(int i = 0; i < count; i++) {
                 dibit = in[i];
                 usedDibits++;
+                // TSBKs: o quadro começa 57 dibits antes (sync 24 + NID 33); a cada 36
+                // dibits há um de status, que não faz parte dos dados
+                if (p25_tsdu_ctr == 0) {
+                    p25_tsbk_n = 0;
+                    p25_tsbk_done = false;
+                }
+                int pos = 57 + p25_tsdu_ctr;
+                if ((pos % 36) != 35 && !p25_tsbk_done) {
+                    p25_tsbk_dibits[p25_tsbk_n++] = (uint8_t)(dibit & 3);
+                    if (p25_tsbk_n == 98) {
+                        uint8_t b[12];
+                        if (p25::decodeTsbk(p25_tsbk_dibits, b)) {
+                            double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                            p25sys.handle(b, now);
+                            if (b[0] & 0x80) { p25_tsbk_done = true; }   // último bloco
+                        }
+                        else {
+                            p25_tsbk_done = true;
+                        }
+                        p25_tsbk_n = 0;
+                    }
+                }
                 p25_tsdu_ctr++;
                 if(p25_tsdu_ctr == 328-25) {
                     p25_tsdu_ctr = 0;

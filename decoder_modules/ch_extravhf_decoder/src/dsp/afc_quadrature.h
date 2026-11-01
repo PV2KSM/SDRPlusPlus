@@ -8,6 +8,8 @@
 //   3. demodula FM (diferença de fase);
 //   4. mede o "DC" da saída enquanto há portadora e corrige o NCO aos poucos.
 // Em 4FSK com dados aleatórios a média da frequência é zero; o que sobra é o erro.
+// Quando o sinal está tão longe que nem passa pelo filtro do canal (ex.: 15 kHz),
+// uma busca grossa usa a faixa inteira do VFO (centroide de potência) para trazê-lo.
 #include <dsp/processor.h>
 #include <dsp/math/hz_to_rads.h>
 #include <dsp/math/normalize_phase.h>
@@ -38,6 +40,13 @@ namespace dsp {
 
         void setEnabled(bool en) { _afcOn = en; if (!en) { _freq = 0; offsetHz = 0; } }
 
+        // Erro máximo que o AFC pode corrigir (acompanha a largura do VFO)
+        void setMaxOffset(double maxOffset) {
+            _maxOffset = maxOffset;
+            if (_freq > _maxOffset) { _freq = _maxOffset; }
+            if (_freq < -_maxOffset) { _freq = -_maxOffset; }
+        }
+
         // Erro de frequência corrigido no momento (Hz). Positivo: sinal acima da sintonia.
         std::atomic<float> offsetHz { 0.0f };
         std::atomic<bool> locked { false };
@@ -56,6 +65,11 @@ namespace dsp {
                 else if (_ncoPhase < -TWO_PI) { _ncoPhase += TWO_PI; }
                 float c = (float)std::cos(_ncoPhase), s = (float)std::sin(_ncoPhase);
                 complex_t x = { in[i].re * c + in[i].im * s, in[i].im * c - in[i].re * s };
+                // busca grossa: correlação de atraso 1 na faixa inteira (antes do filtro)
+                _accSre += x.re * _prevX.re + x.im * _prevX.im;
+                _accSim += x.im * _prevX.re - x.re * _prevX.im;
+                _accP += x.re * x.re + x.im * x.im;
+                _prevX = x;
                 // filtro de canal (linha de atraso circular duplicada para não testar índice)
                 _hist[_hpos] = x;
                 _hist[_hpos + T] = x;
@@ -71,10 +85,12 @@ namespace dsp {
                 _lastPhase = ph;
                 out[i] = d * _invDeviation;
 
-                // estatística para o AFC: média da frequência e quantas amostras
-                // fogem muito dela (ruído espalha por +-pi; 4FSK fica em +-0,6 rad)
+                // estatística para o AFC: média da frequência e estabilidade da
+                // envoltória (4FSK tem amplitude constante; ruído não)
                 _accD += d;
-                if (std::fabs(d - _lastMean) > 1.2f) { _wild++; }
+                double py = (double)y.re * y.re + (double)y.im * y.im;
+                _accY2 += py;
+                _accY4 += py * py;
                 if (++_n >= _blockLen) { updateAfc(); }
             }
             base_type::_in->flush();
@@ -84,7 +100,9 @@ namespace dsp {
 
     private:
         void makeTaps(double cutoff) {
-            const int N = 49;
+            // ~2 ms de filtro: o mesmo corte em qualquer taxa de amostragem
+            int N = ((int)(_sr / 500.0)) | 1;
+            if (N < 49) { N = 49; }
             _taps.assign(N, 0.0f);
             double fc = cutoff / _sr, sum = 0;
             for (int i = 0; i < N; i++) {
@@ -101,16 +119,28 @@ namespace dsp {
 
         void updateAfc() {
             float meanD = _accD / _n;
-            float wildFrac = (float)_wild / (float)_n;
+            double m2 = _accY2 / _n, m4 = _accY4 / _n;
+            // var(|y|^2)/media^2: ~1 para ruído puro, ~0 para portadora limpa (>= 3 dB de SNR: < 0,55)
+            double envVar = (m2 > 0) ? (m4 - m2 * m2) / (m2 * m2) : 1.0;
+            double coh = (_accP > 0) ? std::sqrt(_accSre * _accSre + _accSim * _accSim) / _accP : 0;
+            double coarse = std::atan2(_accSim, _accSre) * _sr / 6.283185307179586;   // Hz
             _accD = 0;
-            _wild = 0;
+            _accY2 = _accY4 = 0;
             _n = 0;
+            _accSre = _accSim = _accP = 0;
             _lastMean = meanD;
-            bool carrier = wildFrac < 0.12f;
+            bool carrier = envVar < 0.55;
             double err = meanD * _sr / 6.283185307179586;   // Hz
             locked = carrier && std::fabs(err) < 300.0;
-            if (!_afcOn || !carrier) { return; }
-            _freq += 0.35 * err;
+            if (!_afcOn) { return; }
+            if (carrier) {
+                _lost = 0;
+                _freq += 0.35 * err;
+            }
+            else if (++_lost >= 3 && coh > 0.3) {
+                // nada no filtro do canal mas há um sinal forte na faixa: vai até ele
+                _freq += 0.5 * coarse;
+            }
             if (_freq > _maxOffset) { _freq = _maxOffset; }
             if (_freq < -_maxOffset) { _freq = -_maxOffset; }
             offsetHz = (float)_freq;
@@ -127,6 +157,9 @@ namespace dsp {
         bool _afcOn = true;
         int _blockLen = 960, _n = 0;
         float _accD = 0, _lastMean = 0;
-        int _wild = 0;
+        int _lost = 0;
+        double _accY2 = 0, _accY4 = 0;
+        double _accSre = 0, _accSim = 0, _accP = 0;
+        complex_t _prevX = { 0, 0 };
     };
 }

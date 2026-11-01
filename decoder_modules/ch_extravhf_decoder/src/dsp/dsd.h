@@ -24,6 +24,7 @@ extern "C" {
 }
 #include "common.h"
 #include "dsd_p25_utils.h"
+#include "p25_tsbk.h"
 #include "Golay24.hpp"
 #include "ReedSolomon.hpp"
 #include "Hamming.hpp"
@@ -423,6 +424,13 @@ namespace dsp {
         int processP25TDU(int count, const uint8_t* in);
         int p25_tsdu_ctr = 0;
         int processP25TSDU(int count, const uint8_t* in);
+    public:
+        // canal de controle P25 (TSBK): sistema, tabela de frequências e concessões
+        p25::System p25sys;
+    private:
+        uint8_t p25_tsbk_dibits[98];
+        int p25_tsbk_n = 0;
+        bool p25_tsbk_done = false;
         int processP25PDU(int count, const uint8_t* in);
     };
 
