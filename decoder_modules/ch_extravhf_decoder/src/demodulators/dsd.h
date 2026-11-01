@@ -185,6 +185,16 @@ namespace demod {
 
         // Liga/desliga o modo CQPSK/LSM (simulcast) em todos os demoduladores DSD
         inline static std::atomic<bool> cqpskMode { false };
+        // Zera o AFC (ao pular para outra frequência)
+        static void resetAfcForRadio(const std::string& radioName) {
+            std::lock_guard<std::mutex> lock(registryMtx);
+            auto it = instances.find(radioName);
+            if (it != instances.end() && it->second) {
+                it->second->quadDemod.setEnabled(false);
+                it->second->quadDemod.setEnabled(true);
+            }
+        }
+
         static void setCqpskAll(bool on) {
             cqpskMode = on;
             std::lock_guard<std::mutex> lock(registryMtx);

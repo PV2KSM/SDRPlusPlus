@@ -23,11 +23,14 @@
 #include <gui/gui.h>
 #include <signal_path/signal_path.h>
 #include "../../radio/src/radio_module_interface.h"
+#include "../../radio/src/radio_interface.h"
 #include <core.h>
 #include <utils/optionlist.h>
 #include <chrono>
 #include <cmath>
 #include <ctime>
+#include <algorithm>
+#include <vector>
 #include <deque>
 #include <map>
 #include <gui/tuner.h>
@@ -95,6 +98,24 @@ public:
         int code = -1;             // color code (DMR) ou NAC (P25)
         double freq = 0;
     };
+    // Identificar as portadoras visíveis na tela
+    struct Carrier {
+        double freq = 0;
+        double width = 0;      // Hz, a -6 dB
+        float level = 0;       // dB acima do ruído
+        int syncs = 0, samples = 0;
+        bool dmr = false, p25 = false;
+        int code = -1;         // CC ou NAC
+        std::string detail;
+        std::string result;
+    };
+    std::vector<Carrier> carriers;
+    int idState = 0;           // 0 parado, 1 identificando
+    std::atomic<bool> idRequest { false };
+    size_t idIndex = 0;
+    double idTunedAt = 0, idPrevFreq = 0;
+    std::string idMsg;
+
     bool cqpsk = false;
     bool callActive = false;
     Call cur;
@@ -249,6 +270,19 @@ public:
             }
             return debugStatusToJson(st, 0, false);
         }
+        if (cmd == "identify_carriers") {
+            idRequest = true;   // feito na thread da interface
+            return "{\"status\":\"ok\"}";
+        }
+        if (cmd == "get_carriers") {
+            std::string o = "{\"running\":" + std::string(idState == 1 ? "true" : "false") + ",\"carriers\":[";
+            for (size_t i = 0; i < carriers.size(); i++) {
+                if (i) { o += ","; }
+                o += "{\"freq\":" + std::to_string((long long)carriers[i].freq) + ",\"width\":" + std::to_string((int)carriers[i].width) +
+                     ",\"result\":\"" + escapeJson(carriers[i].result) + "\"}";
+            }
+            return o + "]}";
+        }
         if (cmd == "get_p25_system") {
             std::string radioName = args.empty() ? "Radio" : args;
             std::string out;
@@ -367,6 +401,7 @@ private:
     static void onFrame(ImGuiContext* ctx, void* p) {
         ((VhfVoiceRadioModule*)p)->followStep();
         ((VhfVoiceRadioModule*)p)->trackCalls();
+        ((VhfVoiceRadioModule*)p)->identifyStep();
     }
 
     // ------------------------------------------------------------------ registro de chamadas
@@ -628,6 +663,202 @@ private:
         ImGui::TreePop();
     }
 
+    // ------------------------------------------------------------------ identificar portadoras
+    std::vector<Carrier> findCarriers() {
+        std::vector<Carrier> out;
+        int width = 0;
+        float* fft = gui::waterfall.acquireLatestFFT(width);
+        if (!fft || width < 32) {
+            gui::waterfall.releaseLatestFFT();
+            return out;
+        }
+        std::vector<float> row(fft, fft + width);
+        gui::waterfall.releaseLatestFFT();
+        double viewBw = gui::waterfall.getViewBandwidth();
+        double start = gui::waterfall.getCenterFrequency() + gui::waterfall.getViewOffset() - viewBw / 2.0;
+        double hz = viewBw / width;
+        std::vector<float> sorted(row);
+        std::nth_element(sorted.begin(), sorted.begin() + width / 2, sorted.end());
+        float floorDb = sorted[width / 2];
+        // suaviza 3 pontos para não pegar picos de ruído
+        std::vector<float> sm(width);
+        for (int i = 0; i < width; i++) {
+            float a = row[(std::max)(0, i - 1)], b = row[i], c = row[(std::min)(width - 1, i + 1)];
+            sm[i] = (a + b + c) / 3.0f;
+        }
+        std::vector<bool> used(width, false);
+        for (int it = 0; it < 24; it++) {
+            int best = -1;
+            for (int i = 0; i < width; i++) {
+                if (!used[i] && (best < 0 || sm[i] > sm[best])) { best = i; }
+            }
+            if (best < 0 || sm[best] < floorDb + 10.0f) { break; }
+            float half = sm[best] - 6.0f;
+            int l = best, r = best;
+            while (l > 0 && sm[l - 1] > half) { l--; }
+            while (r < width - 1 && sm[r + 1] > half) { r++; }
+            // bloqueia a região do sinal (com folga) para o próximo pico
+            int pad = (int)(6000.0 / hz);
+            for (int i = (std::max)(0, l - pad); i <= (std::min)(width - 1, r + pad); i++) { used[i] = true; }
+            Carrier c;
+            double sw = 0, sf = 0;
+            for (int i = l; i <= r; i++) {
+                double pw = std::pow(10.0, (row[i] - floorDb) / 10.0);
+                sw += pw;
+                sf += pw * (start + (i + 0.5) * hz);
+            }
+            c.freq = std::round((sf / sw) / 100.0) * 100.0;
+            c.width = (r - l + 1) * hz;
+            c.level = sm[best] - floorDb;
+            out.push_back(c);
+        }
+        std::sort(out.begin(), out.end(), [](const Carrier& a, const Carrier& b) { return a.freq < b.freq; });
+        return out;
+    }
+
+    void startIdentify() {
+        if (!sigpath::vfoManager.vfoExists("Radio")) { return; }
+        // precisa do modo DSD no Rádio
+        int mode = -1;
+        core::modComManager.callInterface("Radio", RADIO_IFACE_CMD_GET_MODE, NULL, &mode);
+        if (mode != RADIO_DEMOD_DSD) {
+            int m = RADIO_DEMOD_DSD;
+            core::modComManager.callInterface("Radio", RADIO_IFACE_CMD_SET_MODE, &m, NULL);
+        }
+        carriers = findCarriers();
+        if (carriers.empty()) {
+            idMsg = "Nenhuma portadora forte na tela.";
+            return;
+        }
+        idPrevFreq = radioFreq();
+        idIndex = 0;
+        idState = 1;
+        idMsg.clear();
+        tuneCarrier();
+    }
+
+    void tuneCarrier() {
+        tuner::tune(tuner::TUNER_MODE_NORMAL, "Radio", carriers[idIndex].freq);
+        demod::DSD::resetAfcForRadio("Radio");
+        idTunedAt = nowSec();
+    }
+
+    void classify(Carrier& c) {
+        char b[96];
+        if (c.p25) {
+            snprintf(b, sizeof(b), "P25 fase 1 · NAC %03X", c.code);
+            c.result = b;
+        }
+        else if (c.dmr) {
+            snprintf(b, sizeof(b), "DMR · CC %d", c.code);
+            c.result = b;
+        }
+        else if (c.width >= 13000) {
+            c.result = "sem sinc. digital · largo: provável TETRA";
+        }
+        else if (c.width <= 8000) {
+            c.result = "sem sinc. · estreito: NXDN/dPMR, analógico ou portadora";
+        }
+        else {
+            c.result = "sem sincronismo digital (analógico ou outro)";
+        }
+        if (!c.detail.empty()) { c.result += " · " + c.detail; }
+    }
+
+    void identifyStep() {
+        if (idRequest) {
+            idRequest = false;
+            if (idState == 0) { startIdentify(); }
+        }
+        if (idState != 1) { return; }
+        if (idIndex >= carriers.size()) {
+            idState = 0;
+            if (idPrevFreq > 0) { tuner::tune(tuner::TUNER_MODE_NORMAL, "Radio", idPrevFreq); }
+            idMsg = "Pronto: " + std::to_string(carriers.size()) + " portadoras.";
+            return;
+        }
+        Carrier& c = carriers[idIndex];
+        double t = nowSec() - idTunedAt;
+        if (t > 0.5) {
+            demod::DSD::DebugStatus st;
+            if (demod::DSD::getStatusForRadio("Radio", st)) {
+                c.samples++;
+                if (st.sync) {
+                    c.syncs++;
+                    if (st.p25) {
+                        c.p25 = true;
+                        c.code = st.p25_nac;
+                        if (st.p25_type == "TSDU") { c.detail = "canal de controle"; }
+                        else if (st.p25_type == "LDU1" || st.p25_type == "LDU2") { c.detail = "voz"; }
+                        else if (st.p25_type == "UNK" && c.detail.empty()) { c.detail = "ilegível (simulcast?)"; }
+                    }
+                    else if (st.dmr) {
+                        c.dmr = true;
+                        c.code = st.color_code;
+                        std::string a = st.slot0_type + " " + st.slot1_type;
+                        if (a.find("VOICE") != std::string::npos) { c.detail = "voz"; }
+                        else if (a.find("CSBK") != std::string::npos && c.detail != "voz") { c.detail = "controle/troncalizado"; }
+                        else if (a.find("DATA") != std::string::npos && c.detail.empty()) { c.detail = "dados"; }
+                        else if (a.find("Idle") != std::string::npos && c.detail.empty()) { c.detail = "ocioso"; }
+                    }
+                }
+            }
+        }
+        if (t > 2.2) {
+            classify(c);
+            idIndex++;
+            if (idIndex < carriers.size()) { tuneCarrier(); }
+        }
+    }
+
+    void drawIdentify() {
+        ImVec4 dim = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
+        ImVec4 amber(0.96f, 0.69f, 0.25f, 1.0f);
+        if (!ImGui::TreeNodeEx("##ident", 0, "Identificar portadoras na tela")) { return; }
+        float w = ImGui::GetContentRegionAvail().x;
+        if (idState == 1) {
+            if (ImGui::Button("Parar##idstop", ImVec2(w, 0))) {
+                idState = 0;
+                if (idPrevFreq > 0) { tuner::tune(tuner::TUNER_MODE_NORMAL, "Radio", idPrevFreq); }
+            }
+            ImGui::TextColored(amber, "Testando %d de %d: %.4f MHz", (int)idIndex + 1, (int)carriers.size(),
+                               idIndex < carriers.size() ? carriers[idIndex].freq / 1e6 : 0.0);
+        }
+        else {
+            if (ImGui::Button("Identificar agora##idgo", ImVec2(w, 0))) { startIdentify(); }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Acha os picos da tela, sintoniza cada um por ~2 s no modo DSD\n"
+                                  "e diz o que é (DMR, P25, provável TETRA...). Dica: largura 25k.");
+            }
+        }
+        if (!idMsg.empty()) { ImGui::TextColored(dim, "%s", idMsg.c_str()); }
+        if (!carriers.empty() && ImGui::BeginTable("##idtable", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("MHz");
+            ImGui::TableSetupColumn("Larg.");
+            ImGui::TableSetupColumn("O que é");
+            ImGui::TableHeadersRow();
+            for (size_t i = 0; i < carriers.size(); i++) {
+                Carrier& c = carriers[i];
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                char lbl[48];
+                snprintf(lbl, sizeof(lbl), "%.4f##car%d", c.freq / 1e6, (int)i);
+                if (ImGui::Selectable(lbl, false, ImGuiSelectableFlags_SpanAllColumns) && idState == 0) {
+                    tuner::tune(tuner::TUNER_MODE_NORMAL, "Radio", c.freq);
+                }
+                ImGui::TableSetColumnIndex(1);
+                ImGui::Text("%.0fk", c.width / 1000.0);
+                ImGui::TableSetColumnIndex(2);
+                ImGui::PushTextWrapPos(0);
+                if (c.result.empty()) { ImGui::TextColored(dim, idState == 1 && i == idIndex ? "testando..." : "-"); }
+                else { ImGui::TextUnformatted(c.result.c_str()); }
+                ImGui::PopTextWrapPos();
+            }
+            ImGui::EndTable();
+        }
+        ImGui::TreePop();
+    }
+
     void drawNames() {
         if (!ImGui::TreeNodeEx("##names", 0, "Nomes de TG e ID (%d)", (int)names.size())) { return; }
         float w = ImGui::GetContentRegionAvail().x;
@@ -724,6 +955,7 @@ private:
         _this->drawReception();
         _this->drawCallLog();
         _this->drawNames();
+        _this->drawIdentify();
         bool have = demod::DSD::getP25ViewForRadio("Radio", v);
         ImVec4 dim = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
         ImVec4 amber(0.96f, 0.69f, 0.25f, 1.0f);
