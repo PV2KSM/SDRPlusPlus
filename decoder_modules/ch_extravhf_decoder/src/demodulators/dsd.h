@@ -73,6 +73,8 @@ namespace demod {
             int p25_algid = 0x80;
             bool p25_emergency = false;
             std::string p25_type;
+            int p25_kid = 0;
+            int p25_mfid = 0;
         };
 
         DSD() {}
@@ -151,6 +153,8 @@ namespace demod {
             st.p25_algid = p25_st.p25_status_algid;
             st.p25_emergency = p25_st.p25_status_emr;
             st.p25_type = p25_st.p25_status_lasttype;
+            st.p25_kid = p25_st.p25_status_kid;
+            st.p25_mfid = p25_st.p25_status_mfid;
             return st;
         }
 
