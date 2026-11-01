@@ -40,6 +40,22 @@ namespace dsp {
 
         void setEnabled(bool en) { _afcOn = en; if (!en) { _freq = 0; offsetHz = 0; } }
 
+        // Modo CQPSK/LSM (P25 simulcast): filtro RRC no sinal complexo e detecção
+        // diferencial da fase entre símbolos (serve também para C4FM). symbolRate = 4800.
+        void setCqpsk(bool on, double symbolRate = 4800.0) {
+            std::lock_guard<std::recursive_mutex> lck(base_type::ctrlMtx);
+            if (on == _cqpsk) { return; }
+            base_type::tempStop();
+            _cqpsk = on;
+            _sps = (int)std::lround(_sr / symbolRate);
+            if (on) { makeRrcTaps(symbolRate); }
+            else { makeTaps(_cutoff); }
+            _dly.assign(_sps + 1, complex_t{ 0, 0 });
+            _dpos = 0;
+            base_type::tempStart();
+        }
+        bool cqpsk() const { return _cqpsk; }
+
         // Erro máximo que o AFC pode corrigir (acompanha a largura do VFO)
         void setMaxOffset(double maxOffset) {
             _maxOffset = maxOffset;
@@ -80,9 +96,20 @@ namespace dsp {
                     y.re += h[k].re * _taps[k];
                     y.im += h[k].im * _taps[k];
                 }
-                float ph = y.phase();
-                float d = math::normalizePhase(ph - _lastPhase);
-                _lastPhase = ph;
+                float d;
+                if (_cqpsk) {
+                    // fase entre este ponto e o de um símbolo atrás, dividida pelo nº de amostras
+                    complex_t old = _dly[_dpos];
+                    _dly[_dpos] = y;
+                    _dpos = (_dpos + 1) % _sps;
+                    complex_t z = { y.re * old.re + y.im * old.im, y.im * old.re - y.re * old.im };
+                    d = z.phase() / (float)_sps;
+                }
+                else {
+                    float ph = y.phase();
+                    d = math::normalizePhase(ph - _lastPhase);
+                    _lastPhase = ph;
+                }
                 out[i] = d * _invDeviation;
 
                 // estatística para o AFC: média da frequência e estabilidade da
@@ -99,7 +126,33 @@ namespace dsp {
         }
 
     private:
+        void makeRrcTaps(double symbolRate) {
+            // raiz de cosseno levantado, alfa 0,2, 16 símbolos
+            double sps = _sr / symbolRate, beta = 0.2;
+            int N = ((int)(16 * sps)) | 1;
+            _taps.assign(N, 0.0f);
+            double sum = 0;
+            const double PI = 3.14159265358979;
+            for (int i = 0; i < N; i++) {
+                double t = (i - (N - 1) / 2.0) / sps;
+                double v;
+                if (std::fabs(t) < 1e-9) { v = 1.0 - beta + 4 * beta / PI; }
+                else if (std::fabs(std::fabs(t) - 1.0 / (4 * beta)) < 1e-9) {
+                    v = beta / std::sqrt(2.0) * ((1 + 2 / PI) * std::sin(PI / (4 * beta)) + (1 - 2 / PI) * std::cos(PI / (4 * beta)));
+                }
+                else {
+                    v = (std::sin(PI * t * (1 - beta)) + 4 * beta * t * std::cos(PI * t * (1 + beta))) / (PI * t * (1 - (4 * beta * t) * (4 * beta * t)));
+                }
+                _taps[i] = (float)v;
+                sum += v;
+            }
+            for (auto& t : _taps) { t /= (float)sum; }
+            _hist.assign(2 * N, complex_t{ 0, 0 });
+            _hpos = 0;
+        }
+
         void makeTaps(double cutoff) {
+            _cutoff = cutoff;
             // ~2 ms de filtro: o mesmo corte em qualquer taxa de amostragem
             int N = ((int)(_sr / 500.0)) | 1;
             if (N < 49) { N = 49; }
@@ -129,7 +182,8 @@ namespace dsp {
             _n = 0;
             _accSre = _accSim = _accP = 0;
             _lastMean = meanD;
-            bool carrier = envVar < 0.55;
+            // CQPSK não tem envoltória constante: limite mais folgado
+            bool carrier = envVar < (_cqpsk ? 0.8 : 0.55);
             double err = meanD * _sr / 6.283185307179586;   // Hz
             locked = carrier && std::fabs(err) < 300.0;
             if (!_afcOn) { return; }
@@ -157,6 +211,11 @@ namespace dsp {
         bool _afcOn = true;
         int _blockLen = 960, _n = 0;
         float _accD = 0, _lastMean = 0;
+        bool _cqpsk = false;
+        int _sps = 12;
+        double _cutoff = 4200;
+        std::vector<complex_t> _dly;
+        int _dpos = 0;
         int _lost = 0;
         double _accY2 = 0, _accY4 = 0;
         double _accSre = 0, _accSim = 0, _accP = 0;

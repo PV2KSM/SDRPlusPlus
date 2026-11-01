@@ -87,6 +87,7 @@ namespace demod {
             stop();
             unregisterInstance();
             dsp::taps::free(rrcTaps);
+            dsp::taps::free(passTaps);
         }
 
         void init(std::string name, ConfigManager* config, dsp::stream<dsp::complex_t>* input, double bandwidth, double audioSR) {
@@ -106,6 +107,9 @@ namespace demod {
             dcBlock.init(&quadDemod.out, 1.0f / INSR);
             rrcTaps = dsp::taps::rootRaisedCosine<float>(RRC_TAP_COUNT, RRC_ALPHA, 4800.0f, INSR);
             rrcFilt.init(&dcBlock.out, rrcTaps);
+            passTaps = dsp::taps::alloc<float>(1);
+            passTaps.taps[0] = 1.0f;
+            if (cqpskMode) { applyCqpsk(true); }
             clockRecov.init(&rrcFilt.out, INSR / 4800.0f, recov_omega, recov_mu, CLOCK_RECOVERY_REL_LIM, 32, 8);
             constDiagSplitter.init(&clockRecov.out);
             constDiagSplitter.bindStream(&constDiagStream);
@@ -177,6 +181,21 @@ namespace demod {
             double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
             out = it->second->decoder.p25sys.view(now);
             return true;
+        }
+
+        // Liga/desliga o modo CQPSK/LSM (simulcast) em todos os demoduladores DSD
+        inline static std::atomic<bool> cqpskMode { false };
+        static void setCqpskAll(bool on) {
+            cqpskMode = on;
+            std::lock_guard<std::mutex> lock(registryMtx);
+            for (auto& [n, d] : instances) {
+                if (d) { d->applyCqpsk(on); }
+            }
+        }
+        void applyCqpsk(bool on) {
+            quadDemod.setCqpsk(on);
+            // no CQPSK o filtro casado já foi aplicado no sinal complexo
+            rrcFilt.setTaps(on ? passTaps : rrcTaps);
         }
 
         // Canal de controle P25 (sistema, frequências, concessões) em JSON
@@ -395,6 +414,7 @@ namespace demod {
         dsp::correction::DCBlocker<float> dcBlock;
         dsp::filter::FIR<float, float> rrcFilt;
         dsp::tap<float> rrcTaps;
+        dsp::tap<float> passTaps;
         dsp::clock_recovery::FD clockRecov;
         dsp::routing::Splitter<float> constDiagSplitter;
         dsp::stream<float> constDiagStream;

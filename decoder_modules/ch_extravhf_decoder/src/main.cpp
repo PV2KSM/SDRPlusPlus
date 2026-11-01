@@ -52,6 +52,8 @@ public:
         followTrunk = config.conf.value("followTrunk", false);
         skipEncrypted = config.conf.value("skipEncrypted", true);
         tgFilter = config.conf.value("tgFilter", std::string());
+        cqpsk = config.conf.value("cqpsk", false);
+        demod::DSD::setCqpskAll(cqpsk);
         if (config.conf.contains("names") && config.conf["names"].is_object()) {
             for (auto& [k, v] : config.conf["names"].items()) {
                 if (v.is_string()) { names[k] = v.get<std::string>(); }
@@ -93,6 +95,7 @@ public:
         int code = -1;             // color code (DMR) ou NAC (P25)
         double freq = 0;
     };
+    bool cqpsk = false;
     bool callActive = false;
     Call cur;
     std::deque<Call> calls;
@@ -537,6 +540,20 @@ private:
             ImGui::PopTextWrapPos();
         }
         if (std::abs(st.offset_hz) >= 50) { ImGui::TextColored(dim, "Correção de frequência (AFC): %+.1f kHz", st.offset_hz / 1000.0); }
+        if (ImGui::Checkbox("Simulcast (LSM/CQPSK)##cqpsk", &cqpsk)) {
+            demod::DSD::setCqpskAll(cqpsk);
+            saveConfig();
+        }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Para P25 de várias torres na mesma frequência (comum em segurança pública).\n"
+                              "Sinal: sincroniza, mas a constelação vira uma faixa contínua e o DUID sai 'UNK'.\n"
+                              "Deixe desligado para DMR e P25 comum (C4FM).");
+        }
+        if (st.p25 && st.p25_type == "UNK" && !cqpsk) {
+            ImGui::PushTextWrapPos(0);
+            ImGui::TextColored(amber, "Quadros P25 ilegíveis: se for simulcast, ligue a opção acima.");
+            ImGui::PopTextWrapPos();
+        }
         if (callActive) {
             double dur = nowSec() - cur.start;
             ImGui::TextColored(amber, "Chamada %s em andamento · %.0f s", cur.group ? "de grupo" : "privada", dur);
@@ -693,6 +710,7 @@ private:
         config.conf["followTrunk"] = followTrunk;
         config.conf["skipEncrypted"] = skipEncrypted;
         config.conf["tgFilter"] = tgFilter;
+        config.conf["cqpsk"] = cqpsk;
         json n = json::object();
         for (auto& [k, v] : names) { n[k] = v; }
         config.conf["names"] = n;
