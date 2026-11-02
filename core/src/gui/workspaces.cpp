@@ -62,7 +62,7 @@ namespace workspaces {
             { "ADS-B", "ADS-B · radar" }, { "ACARS", "ACARS · CPDLC" }, { "Band Plan", "Plano de bandas" },
             { "Display", "Tela" }, { "Theme", "Tema" }, { "VFO Color", "Cores dos VFOs" },
             { "Module Manager", "Módulos" }, { "Scanner", "Varredura de faixa" }, { "FT8/FT4 Decoder", "FT8 / FT4" },
-            { "VHF Digital Modes", "DMR · P25" },
+            { "VHF Digital Modes", "DMR · P25" }, { "TETRA Demodulator", "TETRA" },
         };
         auto it = N.find(name);
         return it == N.end() ? name : it->second;

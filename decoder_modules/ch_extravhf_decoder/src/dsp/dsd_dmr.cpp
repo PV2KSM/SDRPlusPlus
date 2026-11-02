@@ -1,5 +1,6 @@
 #include "dsd.h"
 #include "dmr_lc.h"
+#include <chrono>
 
 namespace dsp { 
 
@@ -97,6 +98,27 @@ namespace dsp {
                 skipCtr++;
                 // segunda metade da informação: depois dos 5 dibits de slot type
                 if (skipCtr <= 60) { dmr_lc_win2[skipCtr - 1] = in[i]; }
+                if (skipCtr == 60 && dmr_lc_type == 3) {
+                    // CSBK (controle/troncalizado): mesmo alinhamento que o LC; o CRC decide
+                    uint8_t cs[12];
+                    bool ok = false;
+                    for (int sh = 0; sh <= 6 && !ok; sh++) {
+                        int s = (sh % 2) ? -(sh + 1) / 2 : sh / 2;
+                        for (int sw = 0; sw < 2 && !ok; sw++) {
+                            for (int k = 0; k < 49; k++) {
+                                uint8_t a = dmr_lc_win1[3 + s + k], b = dmr_lc_win2[5 + s + k];
+                                if (sw) { a = (uint8_t)(((a & 1) << 1) | ((a >> 1) & 1)); b = (uint8_t)(((b & 1) << 1) | ((b >> 1) & 1)); }
+                                dmr_lc_dibits[k] = a;
+                                dmr_lc_dibits[49 + k] = b;
+                            }
+                            ok = dmr::decodeCsbk(dmr_lc_dibits, cs);
+                        }
+                    }
+                    if (ok) {
+                        double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                        dmrtrunk.handle(cs, dmr_lc_slot, now);
+                    }
+                }
                 if (skipCtr == 60 && (dmr_lc_type == 1 || dmr_lc_type == 2)) {
                     // alinhamento: tenta deslocamentos pequenos e as duas ordens de bit
                     // do dibit; o Reed-Solomon só aceita o certo

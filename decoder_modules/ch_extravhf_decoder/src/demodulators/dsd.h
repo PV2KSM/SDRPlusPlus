@@ -22,6 +22,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <map>
 
 #define CONCAT(a, b) ((std::string(a) + b).c_str())
 
@@ -110,6 +111,7 @@ namespace demod {
             passTaps = dsp::taps::alloc<float>(1);
             passTaps.taps[0] = 1.0f;
             if (cqpskMode) { applyCqpsk(true); }
+            decoder.dmrtrunk.setChannelMap(channelMap);
             clockRecov.init(&rrcFilt.out, INSR / 4800.0f, recov_omega, recov_mu, CLOCK_RECOVERY_REL_LIM, 32, 8);
             constDiagSplitter.init(&clockRecov.out);
             constDiagSplitter.bindStream(&constDiagStream);
@@ -185,6 +187,26 @@ namespace demod {
 
         // Liga/desliga o modo CQPSK/LSM (simulcast) em todos os demoduladores DSD
         inline static std::atomic<bool> cqpskMode { false };
+        // DMR troncalizado (Tier III / Capacity Plus / Connect Plus)
+        static bool getDmrTrunkViewForRadio(const std::string& radioName, dsp::dmr::TrunkSystem::View& out) {
+            std::lock_guard<std::mutex> lock(registryMtx);
+            auto it = instances.find(radioName);
+            if (it == instances.end() || !it->second) {
+                return false;
+            }
+            double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            out = it->second->decoder.dmrtrunk.view(now);
+            return true;
+        }
+        inline static std::map<int, double> channelMap;
+        static void setChannelMapAll(const std::map<int, double>& m) {
+            std::lock_guard<std::mutex> lock(registryMtx);
+            channelMap = m;
+            for (auto& [n, d] : instances) {
+                if (d) { d->decoder.dmrtrunk.setChannelMap(m); }
+            }
+        }
+
         // Zera o AFC (ao pular para outra frequência)
         static void resetAfcForRadio(const std::string& radioName) {
             std::lock_guard<std::mutex> lock(registryMtx);

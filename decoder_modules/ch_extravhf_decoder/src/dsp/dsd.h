@@ -25,6 +25,7 @@ extern "C" {
 #include "common.h"
 #include "dsd_p25_utils.h"
 #include "p25_tsbk.h"
+#include "dmr_trunk.h"
 #include "Golay24.hpp"
 #include "ReedSolomon.hpp"
 #include "Hamming.hpp"
@@ -427,6 +428,7 @@ namespace dsp {
     public:
         // canal de controle P25 (TSBK): sistema, tabela de frequências e concessões
         p25::System p25sys;
+        dmr::TrunkSystem dmrtrunk;
     private:
         uint8_t p25_tsbk_dibits[98];
         int p25_tsbk_n = 0;

@@ -56,6 +56,12 @@ public:
         skipEncrypted = config.conf.value("skipEncrypted", true);
         tgFilter = config.conf.value("tgFilter", std::string());
         cqpsk = config.conf.value("cqpsk", false);
+        if (config.conf.contains("channelMap") && config.conf["channelMap"].is_object()) {
+            for (auto& [k, v] : config.conf["channelMap"].items()) {
+                try { if (v.is_number()) { chanMap[std::stoi(k)] = v.get<double>() * 1e6; } } catch (...) {}
+            }
+        }
+        demod::DSD::setChannelMapAll(chanMap);
         demod::DSD::setCqpskAll(cqpsk);
         if (config.conf.contains("names") && config.conf["names"].is_object()) {
             for (auto& [k, v] : config.conf["names"].items()) {
@@ -115,6 +121,10 @@ public:
     size_t idIndex = 0;
     double idTunedAt = 0, idPrevFreq = 0;
     std::string idMsg;
+
+    std::map<int, double> chanMap;   // canal -> Hz (DMR troncalizado)
+    char mapNum[8] = "";
+    double mapMHz = 0;
 
     bool cqpsk = false;
     bool callActive = false;
@@ -269,6 +279,22 @@ public:
                 return std::string("{\"error\": \"no active DSD demod for radio '") + radioName + "'\"}";
             }
             return debugStatusToJson(st, 0, false);
+        }
+        if (cmd == "get_dmr_trunk") {
+            dsp::dmr::TrunkSystem::View dv;
+            if (!demod::DSD::getDmrTrunkViewForRadio("Radio", dv)) { return "{\"error\":\"sem DSD\"}"; }
+            double now = nowSec();
+            std::string o = std::string("{\"kind\":\"") + dsp::dmr::TrunkSystem::kindName(dv.kind) + "\",\"csbks\":" + std::to_string(dv.csbks) +
+                            ",\"rest_lsn\":" + std::to_string(dv.restLsn) + ",\"grants\":[";
+            bool first = true;
+            for (auto& g : dv.grants) {
+                if (!first) { o += ","; }
+                first = false;
+                o += "{\"group\":" + std::to_string(g.group) + ",\"source\":" + std::to_string(g.source) + ",\"channel\":" + std::to_string(g.channel) +
+                     ",\"slot\":" + std::to_string(g.slot + 1) + ",\"private\":" + (g.privateCall ? "true" : "false") +
+                     ",\"freq\":" + std::to_string((long long)g.freq) + ",\"age\":" + std::to_string(now - g.time) + "}";
+            }
+            return o + "]}";
         }
         if (cmd == "identify_carriers") {
             idRequest = true;   // feito na thread da interface
@@ -859,6 +885,78 @@ private:
         ImGui::TreePop();
     }
 
+    // ------------------------------------------------------------------ DMR troncalizado
+    void drawDmrTrunk() {
+        ImVec4 dim = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
+        ImVec4 amber(0.96f, 0.69f, 0.25f, 1.0f), green(0.27f, 0.82f, 0.47f, 1.0f);
+        dsp::dmr::TrunkSystem::View dv;
+        bool have = demod::DSD::getDmrTrunkViewForRadio("Radio", dv);
+        if (!ImGui::TreeNodeEx("##dmrtrunk", have && dv.kind ? ImGuiTreeNodeFlags_DefaultOpen : 0, "DMR troncalizado%s%s",
+                               have && dv.kind ? ": " : "", have ? dsp::dmr::TrunkSystem::kindName(dv.kind) : "")) { return; }
+        if (!have || dv.kind == dsp::dmr::TrunkSystem::NONE) {
+            ImGui::PushTextWrapPos(0);
+            ImGui::TextColored(dim, "Sintonize o canal de controle (Tier III / Connect Plus) ou o canal de descanso (Capacity Plus). "
+                                    "Tier II (repetidora comum) já funciona direto, sem isto.");
+            ImGui::PopTextWrapPos();
+        }
+        else {
+            ImGui::TextColored(dv.active ? green : dim, "%s · %llu blocos de controle", dv.active ? "recebendo" : "sem sinal agora", (unsigned long long)dv.csbks);
+            if (dv.kind == dsp::dmr::TrunkSystem::CAPPLUS && dv.restLsn) {
+                if (dv.restFreq > 0) { ImGui::Text("Canal de descanso: LSN %d (%.4f MHz)", dv.restLsn, dv.restFreq / 1e6); }
+                else { ImGui::Text("Canal de descanso: LSN %d (repetidora %d)", dv.restLsn, (dv.restLsn + 1) / 2); }
+            }
+            double now = nowSec();
+            int i = 0;
+            for (auto& g : dv.grants) {
+                if (i >= 12) { break; }
+                char lbl[160];
+                double age = now - g.time;
+                char fq[32];
+                if (g.freq > 0) { snprintf(fq, sizeof(fq), "%.4f MHz", g.freq / 1e6); }
+                else { snprintf(fq, sizeof(fq), "canal %d (sem mapa)", g.channel); }
+                snprintf(lbl, sizeof(lbl), "%s %-6u %s slot %d  há %.0fs##dg%d", g.privateCall ? "ID" : "TG", g.group, fq, g.slot + 1, age, i);
+                ImGui::PushStyleColor(ImGuiCol_Text, age < 3 ? amber : ImGui::GetStyle().Colors[ImGuiCol_Text]);
+                if (ImGui::Selectable(lbl, false) && g.freq > 0) { tuner::tune(tuner::TUNER_MODE_NORMAL, "Radio", g.freq); }
+                ImGui::PopStyleColor();
+                i++;
+            }
+        }
+        // mapa de canais
+        ImGui::TextColored(dim, "Mapa de canais (número anunciado -> frequência):");
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextColored(dim, "Tier III: LPCN · Connect Plus: LCN · Capacity Plus: nº da repetidora (LSN 1-2 = 1, 3-4 = 2...)");
+        ImGui::PopTextWrapPos();
+        float w = ImGui::GetContentRegionAvail().x;
+        ImGui::SetNextItemWidth(w * 0.22f);
+        ImGui::InputTextWithHint("##mapnum", "nº", mapNum, sizeof(mapNum), ImGuiInputTextFlags_CharsDecimal);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(w * 0.45f);
+        ImGui::InputDouble("##mapmhz", &mapMHz, 0, 0, "%.5f MHz");
+        ImGui::SameLine();
+        if (ImGui::Button("Salvar##mapsave") && mapNum[0]) {
+            int n = atoi(mapNum);
+            if (mapMHz > 1) { chanMap[n] = mapMHz * 1e6; }
+            else { chanMap.erase(n); }
+            mapNum[0] = 0;
+            demod::DSD::setChannelMapAll(chanMap);
+            saveConfig();
+        }
+        int del = -1;
+        for (auto& [n, f] : chanMap) {
+            ImGui::PushID(n);
+            if (ImGui::SmallButton("x")) { del = n; }
+            ImGui::PopID();
+            ImGui::SameLine();
+            ImGui::Text("Canal %d = %.5f MHz", n, f / 1e6);
+        }
+        if (del >= 0) {
+            chanMap.erase(del);
+            demod::DSD::setChannelMapAll(chanMap);
+            saveConfig();
+        }
+        ImGui::TreePop();
+    }
+
     void drawNames() {
         if (!ImGui::TreeNodeEx("##names", 0, "Nomes de TG e ID (%d)", (int)names.size())) { return; }
         float w = ImGui::GetContentRegionAvail().x;
@@ -899,15 +997,30 @@ private:
             return;
         }
         dsp::p25::System::View v;
-        if (!demod::DSD::getP25ViewForRadio("Radio", v)) { return; }
+        dsp::dmr::TrunkSystem::View dv;
+        bool haveP25 = demod::DSD::getP25ViewForRadio("Radio", v);
+        bool haveDmr = demod::DSD::getDmrTrunkViewForRadio("Radio", dv);
+        if (!haveP25 && !haveDmr) { return; }
         double now = nowSec();
         if (!onVoice) {
-            if (!v.active) { return; }
-            ccFreq = radioFreq();
-            for (auto& g : v.grants) {
+            struct Cand { uint32_t group, source; double freq, time; bool enc; const char* sys; };
+            std::vector<Cand> cands;
+            if (haveP25 && v.active) {
+                for (auto& g : v.grants) { cands.push_back({ g.group, g.source, g.freq, g.time, g.encrypted, "P25" }); }
+            }
+            if (haveDmr && dv.active) {
+                for (auto& g : dv.grants) {
+                    if (g.privateCall) { continue; }
+                    cands.push_back({ g.group, g.source, g.freq, g.time, false, dsp::dmr::TrunkSystem::kindName(dv.kind) });
+                }
+            }
+            if (!(haveP25 && v.active) && !(haveDmr && dv.active)) { return; }
+            // volta para o controle; no Capacity Plus, para o canal de descanso anunciado
+            ccFreq = (haveDmr && dv.active && dv.kind == dsp::dmr::TrunkSystem::CAPPLUS && dv.restFreq > 0) ? dv.restFreq : radioFreq();
+            for (auto& g : cands) {
                 if (now - g.time > 1.0 || g.freq <= 0) { continue; }
-                if (std::fabs(g.freq - ccFreq) < 100) { continue; }
-                if (skipEncrypted && g.encrypted) { continue; }
+                if (std::fabs(g.freq - radioFreq()) < 100) { continue; }
+                if (skipEncrypted && g.enc) { continue; }
                 if (!tgAllowed(g.group)) { continue; }
                 if (g.group == lastTg && now - leftAt < 1.0) { continue; }
                 followTg = g.group;
@@ -916,16 +1029,21 @@ private:
                 onVoice = true;
                 voiceStart = lastActivity = now;
                 tuner::tune(tuner::TUNER_MODE_NORMAL, "Radio", g.freq);
-                char msg[96];
-                snprintf(msg, sizeof(msg), "P25: seguindo TG %u em %.4f MHz", g.group, g.freq / 1e6);
+                demod::DSD::resetAfcForRadio("Radio");
+                char msg[128];
+                snprintf(msg, sizeof(msg), "%s: seguindo TG %u em %.4f MHz", g.sys, g.group, g.freq / 1e6);
                 flog::info("{}", msg);
                 break;
             }
         }
         else {
             demod::DSD::DebugStatus st;
-            if (demod::DSD::getStatusForRadio("Radio", st) && st.sync && !(st.p25 && st.p25_type == "TSDU")) { lastActivity = now; }
-            if (now - lastActivity > 1.5 || now - voiceStart > 120) { goBack(); }
+            if (demod::DSD::getStatusForRadio("Radio", st) && st.sync) {
+                bool p25voice = st.p25 && (st.p25_type == "LDU1" || st.p25_type == "LDU2" || st.p25_type == "HDU");
+                bool dmrvoice = st.dmr && st.voice;
+                if (p25voice || dmrvoice) { lastActivity = now; }
+            }
+            if (now - lastActivity > 2.0 || now - voiceStart > 120) { goBack(); }
         }
     }
 
@@ -942,6 +1060,9 @@ private:
         config.conf["skipEncrypted"] = skipEncrypted;
         config.conf["tgFilter"] = tgFilter;
         config.conf["cqpsk"] = cqpsk;
+        json cm = json::object();
+        for (auto& [k, v] : chanMap) { cm[std::to_string(k)] = v / 1e6; }
+        config.conf["channelMap"] = cm;
         json n = json::object();
         for (auto& [k, v] : names) { n[k] = v; }
         config.conf["names"] = n;
@@ -956,12 +1077,13 @@ private:
         _this->drawCallLog();
         _this->drawNames();
         _this->drawIdentify();
+        _this->drawDmrTrunk();
         bool have = demod::DSD::getP25ViewForRadio("Radio", v);
         ImVec4 dim = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
         ImVec4 amber(0.96f, 0.69f, 0.25f, 1.0f);
         if (!have) { return; }
         ImGui::Separator();
-        ImGui::TextColored(dim, "P25 TRONCALIZADO");
+        ImGui::TextColored(dim, "TRONCALIZADO (P25 e DMR)");
         if (v.tsbks == 0) {
             ImGui::PushTextWrapPos(0);
             ImGui::TextColored(dim, "Nenhum canal de controle P25 recebido. Sintonize a frequência de controle (sinal contínuo) do sistema troncalizado.");

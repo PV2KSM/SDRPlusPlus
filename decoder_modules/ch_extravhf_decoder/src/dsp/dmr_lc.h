@@ -69,10 +69,8 @@ namespace dsp::dmr {
         uint8_t log_[256];
     };
 
-    // infoDibits: 98 dibits (49 antes e 49 depois do sync), na ordem recebida.
-    // dataType: 1 = Voice LC Header (máscara 0x96), 2 = Terminator (0x99).
-    inline LC decodeLC(const uint8_t* infoDibits, int dataType) {
-        LC lc;
+    // 196 bits de um quadro de dados -> 96 bits (12 bytes) do BPTC(196,96)
+    inline void extractBptc(const uint8_t* infoDibits, uint8_t* b) {
         uint8_t raw[196], deint[196];
         for (int i = 0; i < 98; i++) {
             raw[2 * i] = (infoDibits[i] >> 1) & 1;
@@ -89,12 +87,33 @@ namespace dsp::dmr {
                 bits[n++] = deint[1 + row * 15 + col];
             }
         }
-        uint8_t b[12];
         for (int i = 0; i < 12; i++) {
             uint8_t v = 0;
             for (int k = 0; k < 8; k++) { v = (uint8_t)((v << 1) | bits[i * 8 + k]); }
             b[i] = v;
         }
+    }
+
+    // CSBK: 80 bits + CRC-CCITT (início 0, invertido) com máscara 0xA5A5
+    inline bool decodeCsbk(const uint8_t* infoDibits, uint8_t* b) {
+        extractBptc(infoDibits, b);
+        uint16_t crc = 0;
+        for (int i = 0; i < 80; i++) {
+            int bit = (b[i / 8] >> (7 - (i % 8))) & 1;
+            if (((crc >> 15) & 1) ^ bit) { crc = (uint16_t)((crc << 1) ^ 0x1021); }
+            else { crc <<= 1; }
+        }
+        crc ^= 0xFFFF;
+        uint16_t got = (uint16_t)(((b[10] << 8) | b[11]) ^ 0xA5A5);
+        return crc == got;
+    }
+
+    // infoDibits: 98 dibits (49 antes e 49 depois do sync), na ordem recebida.
+    // dataType: 1 = Voice LC Header (máscara 0x96), 2 = Terminator (0x99).
+    inline LC decodeLC(const uint8_t* infoDibits, int dataType) {
+        LC lc;
+        uint8_t b[12];
+        extractBptc(infoDibits, b);
         uint8_t mask = (dataType == 1) ? 0x96 : 0x99;
         for (int i = 9; i < 12; i++) { b[i] ^= mask; }
         static const RS129 rs;

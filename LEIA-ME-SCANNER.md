@@ -75,7 +75,19 @@ continuam no menu Theme, dentro de Explorar.
   ligue **Seguir conversas**: o Rádio vai para a frequência de voz quando um
   talkgroup recebe canal e volta para o controle quando a conversa acaba. Dá para
   limitar a alguns TGs e pular as criptografadas.
-- Ainda não: P25 **fase 2** (TDMA) e modulação **CQPSK/LSM** (simulcast).
+- **Simulcast (LSM/CQPSK)**: chave no painel para P25 de várias torres na mesma
+  frequência (constelação vira uma faixa e o DUID sai "UNK").
+- **DMR troncalizado**: Tier III (concessões TV/PV_GRANT), **Capacity Plus**
+  (canal de descanso e canais ativos com TG) e **Connect Plus** (concessões de
+  voz). Esses sistemas anunciam números de canal, não frequências: preencha o
+  **mapa de canais** no painel (Tier III = LPCN, Connect Plus = LCN, Capacity
+  Plus = nº da repetidora). Com o mapa, "Seguir conversas" funciona igual ao P25.
+  Tier II (repetidora comum) já funcionava.
+- **TETRA**: painel "TETRA" (aba Explorar) — demodulador π/4-DQPSK com MCC/MNC,
+  indicação de criptografia e voz em modo aberto (codec ETSI).
+- **Identificar portadoras na tela**: testa cada pico e diz o que é.
+- **Quadro de recepção, registro de chamadas (chamadas_digitais.csv) e nomes de TG/ID.**
+- Ainda não: P25 **fase 2** (TDMA).
 
 ## ACARS e CPDLC (aba Aviação)
 
