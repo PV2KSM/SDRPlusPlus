@@ -282,6 +282,17 @@ private:
             style::beginDisabled();
         }
 
+        // O TETRA tem o próprio marcador na cascata; este botão o leva até o Rádio
+        if (_this->enabled && _this->vfo && sigpath::vfoManager.vfoExists("Radio")) {
+            if (ImGui::Button(("Levar para a frequência do Rádio##tetra_to_radio_" + _this->name).c_str(), ImVec2(menuWidth, 0))) {
+                _this->vfo->setOffset(sigpath::vfoManager.getOffset("Radio"));
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Coloque o Rádio (clique) em cima da portadora TETRA e aperte aqui.\n"
+                                  "O áudio do TETRA sai pelo próprio canal (veja Saída de áudio).");
+            }
+        }
+
         ImGui::Text("Signal constellation: ");
         ImGui::SetNextItemWidth(menuWidth);
         _this->constDiag.draw();
