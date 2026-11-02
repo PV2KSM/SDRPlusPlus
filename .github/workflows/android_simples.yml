@@ -6,6 +6,7 @@ name: Android (SDR++ Simples)
 on:
   push:
     branches: [ master, scanner-simples ]
+    tags: [ 'v*' ]
   workflow_dispatch:
 
 env:
@@ -55,10 +56,25 @@ jobs:
               name: sdrpp_android
               path: ${{runner.workspace}}/sdrpp.apk
 
-        - name: Publicar APK na pagina de Releases (simples)
+        - name: Publicar APK na pagina de Releases (simples = versao de teste)
           if: github.ref == 'refs/heads/master'
           working-directory: ${{runner.workspace}}
           run: |
             cp sdrpp.apk sdrpp_simples_android.apk
-            gh release view simples -R ${{github.repository}} >/dev/null 2>&1 || gh release create simples -R ${{github.repository}} --target ${{github.sha}} --title "SDR++ Simples (versao mais recente)" --notes "Downloads atualizados automaticamente. Windows: sdrpp_simples_windows_x64.zip (descompacte e abra o sdrpp.exe). Android: sdrpp_simples_android.apk."
+            gh release view simples -R ${{github.repository}} >/dev/null 2>&1 || gh release create simples -R ${{github.repository}} --target ${{github.sha}} --prerelease --title "SDR++ Simples - versao de teste" --notes "Versao de teste, atualizada a cada mudanca no codigo. Para a versao estavel, use a release numerada mais recente (marcada como Latest). Windows: sdrpp_simples_windows_x64.zip (descompacte e abra o sdrpp.exe). Android: sdrpp_simples_android.apk."
             gh release upload simples sdrpp_simples_android.apk -R ${{github.repository}} --clobber
+
+        - name: Publicar APK na versao numerada (tag v*)
+          if: startsWith(github.ref, 'refs/tags/v')
+          env:
+            TAG: ${{ github.ref_name }}
+          run: |
+            R=${{github.repository}}
+            NOTAS=.github/release-notes/$TAG.md
+            [ -f "$NOTAS" ] || echo "SDR++ Simples $TAG" > "$NOTAS"
+            if ! gh release view "$TAG" -R "$R" >/dev/null 2>&1; then
+              # o workflow do Windows pode ter criado ao mesmo tempo
+              gh release create "$TAG" -R "$R" --verify-tag --latest --title "SDR++ Simples $TAG" --notes-file "$NOTAS" || gh release view "$TAG" -R "$R" >/dev/null
+            fi
+            cp ${{runner.workspace}}/sdrpp.apk ${{runner.workspace}}/sdrpp_simples_${TAG}_android.apk
+            gh release upload "$TAG" ${{runner.workspace}}/sdrpp_simples_${TAG}_android.apk -R "$R" --clobber
