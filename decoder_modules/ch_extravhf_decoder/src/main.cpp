@@ -126,6 +126,7 @@ public:
     char mapNum[8] = "";
     double mapMHz = 0;
 
+    float afcShown = 0;        // AFC suavizado para a tela (não pula)
     bool cqpsk = false;
     bool callActive = false;
     Call cur;
@@ -600,7 +601,10 @@ private:
             ImGui::Text("Quadro: %s", frameText(st).c_str());
             ImGui::PopTextWrapPos();
         }
-        if (std::abs(st.offset_hz) >= 50) { ImGui::TextColored(dim, "Correção de frequência (AFC): %+.1f kHz", st.offset_hz / 1000.0); }
+        // Sempre visível (não pode aparecer/sumir, senão o painel salta). Suavizado.
+        afcShown += 0.25f * (st.offset_hz - afcShown);
+        float afcKhz = std::round(afcShown / 100.0f) / 10.0f;   // passo de 0,1 kHz
+        ImGui::TextColored(dim, "Correção de frequência (AFC): %+.1f kHz", afcKhz);
         if (ImGui::Checkbox("Simulcast (LSM/CQPSK)##cqpsk", &cqpsk)) {
             demod::DSD::setCqpskAll(cqpsk);
             saveConfig();

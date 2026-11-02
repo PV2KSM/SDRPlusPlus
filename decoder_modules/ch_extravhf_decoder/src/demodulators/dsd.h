@@ -381,7 +381,8 @@ namespace demod {
                                            lc.dmr_status_privacy ? "criptografada (sem áudio)" : "");
                     }
                 }
-                ImGui::Text("AFC: %+.0f Hz", (float)quadDemod.offsetHz);
+                afcDisp += 0.25f * ((float)quadDemod.offsetHz - afcDisp);
+                ImGui::Text("AFC: %+.0f Hz", std::round(afcDisp / 50.0f) * 50.0f);
             }
             if (!fr_st.sync) {
                 style::endDisabled();
@@ -438,6 +439,7 @@ namespace demod {
         }
 
         float bw = 16000.0;   // folga para o erro de ppm; o filtro do canal fica no AFC
+        float afcDisp = 0;    // AFC suavizado para a tela
 
         inline static std::mutex registryMtx;
         inline static std::unordered_map<std::string, DSD*> instances;
