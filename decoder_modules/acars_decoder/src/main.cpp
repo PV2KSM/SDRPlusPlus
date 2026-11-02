@@ -338,6 +338,8 @@ private:
             std::lock_guard<std::mutex> lck(appsMtx);
             acars::decodeApps(m);
         }
+        // guarda o decodificado com um teto (evita estourar os vértices do OpenGL antigo na tela)
+        if (m.decoded.size() > 4000) { m.decoded = m.decoded.substr(0, 4000) + "\n..."; }
         if (ch) { ch->messages++; }
         totalMessages++;
         std::string line;
@@ -401,22 +403,33 @@ private:
         std::string t = acars::sanitize(m.text);
         if (!t.empty()) {
             ImGui::PushTextWrapPos(0.0f);
-            if (!wide && t.size() > 160) { t = t.substr(0, 160) + "..."; }
+            // limita o texto para o menu lateral (OpenGL antigo tem limite de ~64k vértices por janela)
+            size_t lim = wide ? 600 : 100;
+            if (t.size() > lim) { t = t.substr(0, lim) + "..."; }
             ImGui::TextUnformatted(t.c_str());
             ImGui::PopTextWrapPos();
         }
         if (!m.summary.empty()) {
+            std::string sm = m.summary;
+            if (sm.size() > 180) { sm = sm.substr(0, 180) + "..."; }
             ImGui::PushTextWrapPos(0.0f);
-            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(AMBER), "%s", m.summary.c_str());
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(AMBER), "%s", sm.c_str());
             ImGui::PopTextWrapPos();
         }
-        if (!m.decoded.empty()) {
+        // Os detalhes completos (podem ser grandes) só na janela "Abrir janela",
+        // nunca no menu lateral, para não estourar o limite de vértices do OpenGL antigo.
+        if (wide && !m.decoded.empty()) {
             if (ImGui::TreeNodeEx("##dec", 0, "Detalhes %s", m.app.c_str())) {
+                std::string d = m.decoded;
+                if (d.size() > 2000) { d = d.substr(0, 2000) + "\n..."; }
                 ImGui::PushTextWrapPos(0.0f);
-                ImGui::TextUnformatted(m.decoded.c_str());
+                ImGui::TextUnformatted(d.c_str());
                 ImGui::PopTextWrapPos();
                 ImGui::TreePop();
             }
+        }
+        else if (!wide && !m.decoded.empty()) {
+            ImGui::TextColored(dim, "(abra a janela para ver os detalhes %s)", m.app.c_str());
         }
         ImGui::EndGroup();
         ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
@@ -452,9 +465,9 @@ private:
         ImGui::BeginChild("##acars_wlist");
         {
             std::lock_guard<std::mutex> lck(msgMtx);
-            int i = 0;
+            int i = 0, drawn = 0;
             for (auto& m : messages) {
-                if (visible(m)) { drawMessage(m, i, true); }
+                if (visible(m) && drawn < 80) { drawMessage(m, i, true); drawn++; }
                 i++;
             }
         }
@@ -555,7 +568,7 @@ private:
         std::lock_guard<std::mutex> lck(_this->msgMtx);
         int shown = 0, i = 0;
         for (auto& m : _this->messages) {
-            if (shown >= 6) { break; }
+            if (shown >= 4) { break; }
             if (_this->visible(m)) {
                 _this->drawMessage(m, i, false);
                 shown++;
