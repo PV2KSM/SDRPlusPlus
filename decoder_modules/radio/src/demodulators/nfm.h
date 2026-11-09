@@ -77,6 +77,9 @@ namespace demod {
         bool getNBAllowed() { return false; }
         dsp::stream<dsp::stereo_t>* getOutput() { return &demod.out; }
 
+        // tom CTCSS do sinal recebido (Hz) ou 0
+        float getToneHz() { return demod.tone.toneHz; }
+
     private:
         dsp::demod::FM<dsp::stereo_t> demod;
 

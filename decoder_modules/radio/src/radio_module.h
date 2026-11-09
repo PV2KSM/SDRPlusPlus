@@ -197,7 +197,16 @@ public:
     }
 
     // Automation channel — invoked by debug HTTP server
+    // tom CTCSS do sinal recebido no FM (Hz) ou 0
+    float receivedTone() {
+        if (selectedDemodID != RADIO_DEMOD_NFM || !selectedDemod) { return 0; }
+        return ((demod::NFM*)selectedDemod)->getToneHz();
+    }
+
     std::string handleDebugCommand(const std::string& cmd, const std::string& args) override {
+        if (cmd == "get_tone") {
+            return "{\"tone\":" + std::to_string(receivedTone()) + "}";
+        }
         if (cmd == "set_demod" || cmd == "set_demodulator") {
             // Try matching by name first (accept "FM", "NFM", "WFM", "AM", etc.)
             std::string modeName = args;
@@ -840,6 +849,14 @@ private:
                 }
                 if (!_this->FMIFNREnabled && _this->enabled) { style::endDisabled(); }
             }
+        }
+
+        // Tom CTCSS do sinal recebido (linha sempre presente no FM, para o menu não saltar)
+        if (_this->selectedDemodID == RADIO_DEMOD_NFM) {
+            float t = _this->receivedTone();
+            if (t > 0) { ImGui::TextColored(ImVec4(0.96f, 0.69f, 0.25f, 1.0f), "Tom recebido: CTCSS %.1f Hz", t); }
+            else { ImGui::TextDisabled("Tom recebido: nenhum"); }
+            if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Tom subaudível que a estação transmite (ex.: o tom de acesso de uma repetidora).\nAparece depois de ~2 s de transmissão."); }
         }
 
         // Demodulator specific menu

@@ -378,6 +378,7 @@ namespace workspaces {
         std::string dmrLast;
         std::string digLabel = "DMR";
         std::string dmrInfo;
+        float tone = 0;
     };
     static Status status;
     static double statusAt = -100;
@@ -409,6 +410,12 @@ namespace workspaces {
                 s.acarsRunning = j.value("running", false);
                 s.acarsMsgs = j.value("messages", 0);
                 s.acarsLast = j.value("last", std::string());
+            }
+        }
+        if (mode == RADIO_IFACE_MODE_NFM) {
+            if (auto r = radioInstance()) {
+                json j = json::parse(r->handleDebugCommand("get_tone", ""), nullptr, false);
+                if (!j.is_discarded()) { s.tone = j.value("tone", 0.0f); }
             }
         }
         if (mode == MODE_DSD) {
@@ -1180,6 +1187,11 @@ namespace workspaces {
         const ModeInfo* m = findMode(mode);
         std::string ms = m ? modeLabel(*m) : std::string("-");
         item(BLUE, LABELS[cur], std::string(fbuf) + "  " + ms + "  " + bwText(getBandwidth()));
+        if (mode == RADIO_IFACE_MODE_NFM && status.tone > 0) {
+            char tb[32];
+            snprintf(tb, sizeof(tb), "CTCSS %.1f Hz", status.tone);
+            item(AMBER, "Tom", tb);
+        }
 
         if (nowSec() - centerMsgAt < 6 && !centerMsg.empty()) { item(AMBER, "Centralizar", centerMsg); }
         if (status.scanning) {

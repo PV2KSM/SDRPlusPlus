@@ -6,6 +6,7 @@
 #include "../taps/high_pass.h"
 #include "../taps/band_pass.h"
 #include "../convert/mono_to_stereo.h"
+#include "tone_meter.h"
 
 namespace dsp::demod {
     template <class T>
@@ -29,6 +30,7 @@ namespace dsp::demod {
             _highPass = highPass;
 
             demod.init(NULL, bandwidth / 2.0, _samplerate);
+            tone.setSamplerate(_samplerate);
             loadDummyTaps();
             fir.init(NULL, filterTaps);
 
@@ -49,6 +51,7 @@ namespace dsp::demod {
             base_type::tempStop();
             _samplerate = samplerate;
             demod.setDeviation(_bandwidth / 2.0, _samplerate);
+            tone.setSamplerate(_samplerate);
             updateFilter(_lowPass, _highPass);
             base_type::tempStart();
         }
@@ -86,6 +89,7 @@ namespace dsp::demod {
         inline int process(int count, dsp::complex_t* in, T* out) {
             if constexpr (std::is_same_v<T, float>) {
                 demod.process(count, in, out);
+                tone.feed(out, count);
                 if (filtering) {
                     std::lock_guard<std::mutex> lck(filterMtx);
                     fir.process(count, out, out);
@@ -93,6 +97,7 @@ namespace dsp::demod {
             }
             if constexpr (std::is_same_v<T, stereo_t>) {
                 demod.process(count, in, demod.out.writeBuf);
+                tone.feed(demod.out.writeBuf, count);
                 if (filtering) {
                     std::lock_guard<std::mutex> lck(filterMtx);
                     fir.process(count, demod.out.writeBuf, demod.out.writeBuf);
@@ -112,6 +117,9 @@ namespace dsp::demod {
             if (!base_type::out.swap(count)) { return -1; }
             return count;
         }
+
+        // tom CTCSS do sinal recebido (Hz) ou 0
+        ToneMeter tone;
 
     private:
         void updateFilter(bool lowPass, bool highPass) {
