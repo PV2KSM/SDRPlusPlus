@@ -10,6 +10,8 @@
 
 #define _USE_MATH_DEFINES
 #include <math.h>
+#include <atomic>
+#include <cstring>
 
 #ifdef WIN32
 #undef max
@@ -428,6 +430,8 @@ namespace dsp {
     public:
         // canal de controle P25 (TSBK): sistema, tabela de frequências e concessões
         p25::System p25sys;
+        // silencia a voz (chamada criptografada: sem a chave só sairia ruído)
+        std::atomic<bool> muteVoice { false };
         dmr::TrunkSystem dmrtrunk;
     private:
         uint8_t p25_tsbk_dibits[98];

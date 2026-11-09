@@ -52,7 +52,8 @@ public:
     VhfVoiceRadioModule(std::string name) {
         this->name = name;
         config.acquire();
-        followTrunk = config.conf.value("followTrunk", false);
+        followTrunk = config.conf.value("followTrunk", true);
+        if (!config.conf.contains("uiSimples")) { followTrunk = true; }
         skipEncrypted = config.conf.value("skipEncrypted", true);
         tgFilter = config.conf.value("tgFilter", std::string());
         cqpsk = config.conf.value("cqpsk", false);
@@ -70,6 +71,7 @@ public:
         }
         demod::DSD::setChannelMapAll(chanMap);
         demod::DSD::setCqpskAll(cqpsk);
+        demod::DSD::cardDrawer = [this]() { drawCard(); };
         if (config.conf.contains("names") && config.conf["names"].is_object()) {
             for (auto& [k, v] : config.conf["names"].items()) {
                 if (v.is_string()) { names[k] = v.get<std::string>(); }
@@ -85,10 +87,12 @@ public:
     ~VhfVoiceRadioModule() {
         gui::mainWindow.onWaterfallDrawn.unbindHandler(&frameHandler);
         gui::menu.removeEntry(name);
+        demod::DSD::cardDrawer = nullptr;
     }
 
     // P25 troncalizado
-    bool followTrunk = false;
+    bool followTrunk = true;
+    double unmappedMHz = 0;
     bool skipEncrypted = true;
     std::string tgFilter;
     bool onVoice = false;
@@ -591,6 +595,16 @@ private:
     }
 
     void trackCalls() {
+        trackCallsInner();
+        bool mute = callActive && cur.encrypted;
+        if (mute != muted) {
+            muted = mute;
+            demod::DSD::setMuteForRadio("Radio", mute);
+        }
+    }
+    bool muted = false;
+
+    void trackCallsInner() {
         demod::DSD::DebugStatus st;
         double now = nowSec();
         if (!gui::mainWindow.isPlaying() || !demod::DSD::getStatusForRadio("Radio", st)) {
@@ -659,7 +673,6 @@ private:
             ImGui::PopTextWrapPos();
             return;
         }
-        ImGui::TextColored(dim, "RECEPÇÃO AGORA");
         if (!st.sync) {
             ImGui::TextColored(dim, "Sem sinal digital sincronizado");
         }
@@ -702,25 +715,108 @@ private:
         if (demodMode == 0) { ImGui::TextColored(dim, "Em uso: %s", cqpsk ? "simulcast (CQPSK)" : "C4FM / 4FSK"); }
         else if (st.p25 && st.p25_type == "UNK") { ImGui::TextColored(amber, "Quadros P25 ilegíveis: tente Automática"); }
         else { ImGui::TextColored(dim, "Travado nesta demodulação"); }
-        if (callActive) {
-            double dur = nowSec() - cur.start;
-            ImGui::TextColored(amber, "Chamada %s em andamento · %.0f s", cur.group ? "de grupo" : "privada", dur);
-            ImGui::Text("Para:  %s %s", cur.group ? "TG" : "ID", label(cur.group ? "TG" : "ID", cur.tg).c_str());
-            ImGui::Text("De:    ID %s", label("ID", cur.src).c_str());
-            if (cur.slot >= 0) { ImGui::Text("Slot:  %d", cur.slot + 1); }
-            if (cur.encrypted) {
-                std::string a = cur.mode == "P25" ? algName(cur.algid) : std::string("privacy do DMR");
-                if (cur.mode == "P25" && cur.keyid) {
-                    char b[24];
-                    snprintf(b, sizeof(b), ", chave 0x%04X", cur.keyid);
-                    a += b;
-                }
-                ImGui::TextColored(red, "Criptografada (%s): sem áudio", a.c_str());
+    }
+
+    // ------------------------------------------------------------------ cartão principal
+    // Só o que importa: estado, quem fala, para quem, aberta ou não. Número fixo de
+    // linhas (o painel não salta) e o resto no "Avançado".
+    void drawCard() {
+        ImVec4 dim = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
+        ImVec4 amber(0.96f, 0.69f, 0.25f, 1.0f), green(0.27f, 0.82f, 0.47f, 1.0f), red(1.0f, 0.45f, 0.4f, 1.0f);
+        demod::DSD::DebugStatus st;
+        if (!demod::DSD::getStatusForRadio("Radio", st)) {
+            ImGui::PushTextWrapPos(0);
+            ImGui::TextColored(dim, "Escolha o modo DMR (DSD) no Rádio para ouvir DMR e P25.");
+            ImGui::PopTextWrapPos();
+            return;
+        }
+        double now = nowSec();
+        const char* sys = st.p25 ? "P25" : (st.dmr ? "DMR" : "");
+        // 1. estado (bolinha desenhada: a fonte não tem o caractere)
+        ImVec4 dc;
+        const char* stTxt;
+        char stBuf[64];
+        if (callActive) { dc = cur.encrypted ? red : green; snprintf(stBuf, sizeof(stBuf), "%s  %s", cur.encrypted ? "Criptografada" : "Com voz", cur.mode.c_str()); stTxt = stBuf; }
+        else if (st.sync) { dc = amber; snprintf(stBuf, sizeof(stBuf), "Sinal %s, sem voz agora", sys[0] ? sys : "digital"); stTxt = stBuf; }
+        else if (st.carrier) { dc = dim; stTxt = "Portadora, sincronizando..."; }
+        else { dc = dim; stTxt = "Procurando sinal"; }
+        {
+            float lh = ImGui::GetTextLineHeight();
+            ImVec2 p0 = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p0.x + lh * 0.35f, p0.y + lh * 0.5f), lh * 0.28f, ImGui::GetColorU32(dc));
+            ImGui::Dummy(ImVec2(lh * 0.8f, lh));
+            ImGui::SameLine();
+            ImGui::TextColored(dc, "%s", stTxt);
+        }
+        // 2-4. chamada atual, ou a última (apagada)
+        const Call* c = callActive ? &cur : (calls.empty() ? nullptr : &calls.front());
+        ImVec4 tc = callActive ? ImGui::GetStyle().Colors[ImGuiCol_Text] : dim;
+        if (c) {
+            ImGui::TextColored(tc, "Para  %s %s", c->group ? "TG" : "ID", label(c->group ? "TG" : "ID", c->tg).c_str());
+            ImGui::TextColored(tc, "De    ID %s", label("ID", c->src).c_str());
+            if (callActive) {
+                if (c->encrypted) { ImGui::TextColored(red, "Sem áudio (%s)", c->mode == "P25" ? algName(c->algid).c_str() : "privacy"); }
+                else { ImGui::TextColored(green, "Aberta · %.0f s%s", now - c->start, c->slot >= 0 ? (c->slot ? " · slot 2" : " · slot 1") : ""); }
             }
             else {
-                ImGui::TextColored(green, "Aberta");
+                double ago = c->last - c->start;
+                (void)ago;
+                double since = now - c->last;
+                if (since < 60) { ImGui::TextColored(dim, "Última chamada · há %.0f s", since); }
+                else { ImGui::TextColored(dim, "Última chamada · há %.0f min", since / 60); }
             }
-            if (cur.emergency) { ImGui::TextColored(red, "EMERGÊNCIA"); }
+        }
+        else {
+            ImGui::TextColored(dim, "Para  -");
+            ImGui::TextColored(dim, "De    -");
+            ImGui::TextColored(dim, "Aguardando a primeira chamada");
+        }
+        if (c && c->emergency && callActive) {
+            ImGui::SameLine();
+            ImGui::TextColored(red, "  EMERGÊNCIA");
+        }
+        // seguindo troncalizado
+        if (onVoice) { ImGui::TextColored(amber, "Seguindo conversa em %.4f MHz", voiceFreq / 1e6); }
+        // DMR troncalizado com canal sem frequência: pede só o que falta
+        dsp::dmr::TrunkSystem::View dv;
+        if (followTrunk && demod::DSD::getDmrTrunkViewForRadio("Radio", dv) && dv.active) {
+            for (auto& g : dv.grants) {
+                if (g.freq > 0 || now - g.time > 30) { continue; }
+                ImGui::PushTextWrapPos(0);
+                ImGui::TextColored(amber, "%s anunciou o canal %d, mas falta a frequência dele:", dsp::dmr::TrunkSystem::kindName(dv.kind), g.channel);
+                ImGui::PopTextWrapPos();
+                float w = ImGui::GetContentRegionAvail().x;
+                ImGui::SetNextItemWidth(w * 0.6f);
+                ImGui::InputDouble("##unmapped", &unmappedMHz, 0, 0, "%.5f MHz");
+                ImGui::SameLine();
+                if (ImGui::Button("Salvar##unmapped") && unmappedMHz > 1) {
+                    chanMap[g.channel] = unmappedMHz * 1e6;
+                    unmappedMHz = 0;
+                    demod::DSD::setChannelMapAll(chanMap);
+                    saveConfig();
+                }
+                break;
+            }
+        }
+        // últimas chamadas (clique volta para a frequência)
+        if (calls.size() > (callActive ? 0u : 1u)) {
+            ImGui::Spacing();
+            ImGui::TextColored(dim, "Recentes");
+            int i = 0;
+            for (size_t k = callActive ? 0 : 1; k < calls.size() && i < 4; k++, i++) {
+                const Call& r = calls[k];
+                char tb[8];
+                struct tm lt;
+#ifdef _WIN32
+                localtime_s(&lt, &r.wall);
+#else
+                localtime_r(&r.wall, &lt);
+#endif
+                strftime(tb, sizeof(tb), "%H:%M", &lt);
+                char lbl[160];
+                snprintf(lbl, sizeof(lbl), "%s  %s %s%s##rc%d", tb, r.group ? "TG" : "ID", label(r.group ? "TG" : "ID", r.tg).c_str(), r.encrypted ? "  (cripto)" : "", i);
+                if (ImGui::Selectable(lbl, false) && r.freq > 0) { tuner::tune(tuner::TUNER_MODE_NORMAL, "Radio", r.freq); }
+            }
         }
     }
 
@@ -1144,6 +1240,7 @@ private:
     void saveConfig() {
         config.acquire();
         config.conf["followTrunk"] = followTrunk;
+        config.conf["uiSimples"] = true;
         config.conf["skipEncrypted"] = skipEncrypted;
         config.conf["tgFilter"] = tgFilter;
         config.conf["cqpsk"] = cqpsk;
@@ -1162,6 +1259,7 @@ private:
         auto _this = (VhfVoiceRadioModule*)ctx;
         float w = ImGui::GetContentRegionAvail().x;
         dsp::p25::System::View v;
+        // o cartão da chamada fica no menu do Rádio; aqui, os ajustes
         _this->drawReception();
         _this->drawCallLog();
         _this->drawNames();

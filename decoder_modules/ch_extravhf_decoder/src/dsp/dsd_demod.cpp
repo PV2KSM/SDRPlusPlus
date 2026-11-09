@@ -239,6 +239,7 @@ namespace dsp {
             }
 
             mbe_status.mbe_status_errorbar += std::string(mbe_errStr);
+            if (muteVoice) { memset(out, 0, 160 * sizeof(short)); }
 
             *outcnt += 160;
         }

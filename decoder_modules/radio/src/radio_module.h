@@ -709,6 +709,14 @@ private:
 
         ImGui::EndGroup();
 
+        // Modo digital (DSD): squelch, vowel squelch e snap não se aplicam (o áudio só sai
+        // quando há voz decodificada) e a largura fica na barra de controle. Só o cartão da chamada.
+        if (_this->selectedDemod && std::string(_this->selectedDemod->getName()) == "DSD") {
+            _this->selectedDemod->showMenu();
+            if (!_this->enabled) { style::endDisabled(); }
+            return;
+        }
+
         if (!_this->bandwidthLocked) {
             ImGui::LeftLabel("Bandwidth");
             const ImVec2 width = ImGui::CalcTextSize("123456    +    -    ");

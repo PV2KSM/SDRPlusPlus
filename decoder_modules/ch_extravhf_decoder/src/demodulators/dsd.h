@@ -23,6 +23,7 @@
 #include <thread>
 #include <unordered_map>
 #include <map>
+#include <functional>
 
 #define CONCAT(a, b) ((std::string(a) + b).c_str())
 
@@ -194,6 +195,8 @@ namespace demod {
 
         // Liga/desliga o modo CQPSK/LSM (simulcast) em todos os demoduladores DSD
         inline static std::atomic<bool> cqpskMode { false };
+        // desenha o cartão da chamada no menu do Rádio (registrado pelo módulo)
+        inline static std::function<void()> cardDrawer;
         // DMR troncalizado (Tier III / Capacity Plus / Connect Plus)
         static bool getDmrTrunkViewForRadio(const std::string& radioName, dsp::dmr::TrunkSystem::View& out) {
             std::lock_guard<std::mutex> lock(registryMtx);
@@ -229,6 +232,12 @@ namespace demod {
             std::lock_guard<std::mutex> lock(registryMtx);
             auto it = instances.find(radioName);
             if (it != instances.end() && it->second) { it->second->quadDemod.setOffset(hz); }
+        }
+
+        static void setMuteForRadio(const std::string& radioName, bool mute) {
+            std::lock_guard<std::mutex> lock(registryMtx);
+            auto it = instances.find(radioName);
+            if (it != instances.end() && it->second) { it->second->decoder.muteVoice = mute; }
         }
 
         static void setCqpskAll(bool on) {
@@ -320,6 +329,17 @@ namespace demod {
         }
 
         void showMenu() {
+            // Cartão da chamada (desenhado pelo módulo de modos digitais)
+            if (cardDrawer) { cardDrawer(); }
+            else {
+                dsp::NewDSD::Frame_status fs = decoder.getFrameSyncStatus();
+                ImVec4 dim = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
+                const char* m = fs.lasttype == dsp::NewDSD::Frame_status::LAST_P25 ? "P25" : (fs.lasttype == dsp::NewDSD::Frame_status::LAST_DMR ? "DMR" : "");
+                if (fs.sync) { ImGui::TextColored(ImVec4(0.27f, 0.82f, 0.47f, 1.0f), "%s sincronizado", m[0] ? m : "Sinal digital"); }
+                else { ImGui::TextColored(dim, "Procurando sinal digital..."); }
+            }
+            ImGui::Spacing();
+            if (!ImGui::TreeNode("Detalhes técnicos##dsd_tec")) { return; }
             float menuWidth = ImGui::GetContentRegionAvail().x;
             ImGui::Text("Signal constellation+slicer levels: ");
             ImGui::SetNextItemWidth(menuWidth);
@@ -401,6 +421,7 @@ namespace demod {
             if (!fr_st.sync) {
                 style::endDisabled();
             }
+            ImGui::TreePop();
         }
 
         void setBandwidth(double bandwidth) {
