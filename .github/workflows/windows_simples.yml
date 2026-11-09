@@ -1,4 +1,4 @@
-name: Windows (SDR++ Simples)
+name: Windows (SDR+Easy)
 
 # Compilação enxuta para Windows: só o que o projeto usa (RTL-SDR, rádio, DMR,
 # ADS-B, listas/scanner, gravador, redução de ruído). Em caso de falha, as
@@ -160,7 +160,7 @@ jobs:
       run: |
         gh release view simples -R ${{ github.repository }} *> $null
         if ($LASTEXITCODE -ne 0) {
-          gh release create simples -R ${{ github.repository }} --target ${{ github.sha }} --prerelease --title "SDR++ Simples - versao de teste" --notes "Versao de teste, atualizada a cada mudanca no codigo. Para a versao estavel, use a release numerada mais recente (marcada como Latest). Windows: sdrpp_simples_windows_x64.zip (descompacte e abra o sdrpp.exe). Android: sdrpp_simples_android.apk."
+          gh release create simples -R ${{ github.repository }} --target ${{ github.sha }} --prerelease --title "SDR+Easy - versao de teste" --notes "Versao de teste, atualizada a cada mudanca no codigo. Para a versao estavel, use a release numerada mais recente (marcada como Latest). Windows: sdrpp_simples_windows_x64.zip (descompacte e abra o sdrpp.exe). Android: sdrpp_simples_android.apk."
         }
         gh release upload simples "${{ runner.workspace }}/sdrpp_simples_windows_x64.zip" -R ${{ github.repository }} --clobber
         if ($LASTEXITCODE -ne 0) { exit 1 }
@@ -174,10 +174,10 @@ jobs:
       run: |
         $repo = "${{ github.repository }}"
         $notas = ".github/release-notes/$env:TAG.md"
-        if (-not (Test-Path $notas)) { Set-Content -Path $notas -Value "SDR++ Simples $env:TAG" }
+        if (-not (Test-Path $notas)) { Set-Content -Path $notas -Value "SDR+Easy $env:TAG" }
         gh release view $env:TAG -R $repo *> $null
         if ($LASTEXITCODE -ne 0) {
-          gh release create $env:TAG -R $repo --verify-tag --latest --title "SDR++ Simples $env:TAG" --notes-file $notas
+          gh release create $env:TAG -R $repo --verify-tag --latest --title "SDR+Easy $env:TAG" --notes-file $notas
           # o workflow do Android pode ter criado ao mesmo tempo
           if ($LASTEXITCODE -ne 0) { gh release view $env:TAG -R $repo *> $null; if ($LASTEXITCODE -ne 0) { exit 1 } }
         }
