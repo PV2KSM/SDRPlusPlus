@@ -627,6 +627,337 @@ namespace workspaces {
         flog::info("Centralizar: {}", centerMsg);
     }
 
+    // ------------------------------------------------------------------ faixas
+    // Trecho de uma faixa: ao tocar, sintoniza já com o modo e a largura certos
+    struct Seg {
+        double lo, hi;
+        const char* name;
+        int mode;
+        float bw;
+    };
+    struct Mark {
+        double f;
+        const char* name;
+    };
+    struct Band {
+        const char* label;
+        double lo, hi;
+        double home;      // onde cai ao tocar no botão da faixa
+        int mode;
+        float bw;
+        bool hf;          // abaixo de 24 MHz: precisa do modo HF do RTL-SDR v3
+        std::vector<Seg> plan;
+    };
+
+    static const int AM = RADIO_IFACE_MODE_AM, FM = RADIO_IFACE_MODE_NFM, USB = RADIO_IFACE_MODE_USB,
+                     LSB = RADIO_IFACE_MODE_LSB, CW = RADIO_IFACE_MODE_CW;
+
+    // Aviação: 108-137 MHz (logo depois do FM comercial)
+    static const std::vector<Seg> AIR_PLAN = {
+        { 108.000e6, 118.000e6, "Navegação · VOR / ILS", AM, 12500 },
+        { 118.000e6, 137.000e6, "Comunicação · torre, aproximação, centro", AM, 8333 },
+    };
+    static const std::vector<Mark> AIR_MARKS = {
+        { 121.500e6, "121,500 emergência" },
+        { 131.550e6, "ACARS" },
+    };
+
+    // Radioamador no Brasil: limites da Resolução Anatel 697/2018; plano de 2 m e 70 cm
+    // conforme o plano de frequências usado no país (IARU Região 2)
+    static const std::vector<Band> HAM_BANDS = {
+        { "6 m", 50e6, 54e6, 50.125e6, USB, 2700, false, {} },
+        { "2 m", 144e6, 148e6, 145.000e6, FM, 12500, false, {
+            { 144.000e6, 144.100e6, "CW", CW, 500 },
+            { 144.100e6, 144.300e6, "SSB", USB, 2700 },
+            { 144.300e6, 144.500e6, "Satélite", FM, 12500 },
+            { 144.500e6, 144.600e6, "FM simplex", FM, 12500 },
+            { 144.600e6, 144.900e6, "Repetidoras (entrada)", FM, 12500 },
+            { 144.900e6, 145.100e6, "Pacote", FM, 12500 },
+            { 145.100e6, 145.200e6, "FM simplex", FM, 12500 },
+            { 145.200e6, 145.500e6, "Repetidoras (saída)", FM, 12500 },
+            { 145.500e6, 145.565e6, "Todos os modos", FM, 12500 },
+            { 145.565e6, 145.575e6, "APRS", FM, 12500 },
+            { 145.575e6, 148.000e6, "FM simplex e repetidoras", FM, 12500 },
+        } },
+        { "70 cm", 430e6, 440e6, 433.000e6, FM, 12500, false, {
+            { 430.000e6, 431.000e6, "Todos os modos", FM, 12500 },
+            { 431.000e6, 432.000e6, "Dados", FM, 12500 },
+            { 432.000e6, 432.100e6, "CW", CW, 500 },
+            { 432.100e6, 433.000e6, "SSB · CW", USB, 2700 },
+            { 433.000e6, 433.500e6, "FM simplex", FM, 12500 },
+            { 433.500e6, 433.600e6, "APRS", FM, 12500 },
+            { 433.600e6, 434.000e6, "FM simplex", FM, 12500 },
+            { 434.000e6, 435.000e6, "Repetidoras (entrada)", FM, 12500 },
+            { 435.000e6, 438.000e6, "Satélite", FM, 12500 },
+            { 438.000e6, 439.000e6, "Todos os modos", FM, 12500 },
+            { 439.000e6, 440.000e6, "Repetidoras (saída)", FM, 12500 },
+        } },
+        { "23 cm", 1240e6, 1300e6, 1296.200e6, USB, 2700, false, {} },
+        { "160 m", 1.800e6, 2.000e6, 1.840e6, LSB, 2700, true, {} },
+        { "80 m", 3.500e6, 4.000e6, 3.700e6, LSB, 2700, true, {} },
+        { "40 m", 7.000e6, 7.300e6, 7.100e6, LSB, 2700, true, {} },
+        { "30 m", 10.100e6, 10.150e6, 10.120e6, USB, 2700, true, {} },
+        { "20 m", 14.000e6, 14.350e6, 14.200e6, USB, 2700, true, {} },
+        { "17 m", 18.068e6, 18.168e6, 18.120e6, USB, 2700, true, {} },
+        { "15 m", 21.000e6, 21.450e6, 21.200e6, USB, 2700, true, {} },
+        { "12 m", 24.890e6, 24.990e6, 24.940e6, USB, 2700, true, {} },
+        { "10 m", 28.000e6, 29.700e6, 28.500e6, USB, 2700, true, {} },
+    };
+
+    static double radioFreq() {
+        if (!sigpath::vfoManager.vfoExists(RADIO_VFO)) { return 0; }
+        return gui::waterfall.getCenterFrequency() + sigpath::vfoManager.getOffset(RADIO_VFO);
+    }
+
+    // Abaixo de 24 MHz o RTL-SDR v3 só recebe em amostragem direta (ramo Q).
+    // Liga sozinho ao ir para HF/NDB e desliga ao voltar, se foi a aba que ligou.
+    static bool dsByUs = false;
+    static void autoDirectSampling(double f) {
+        auto src = instanceOf("rtl_sdr_source");
+        if (!src) { return; }
+        bool hf = f < 24e6;
+        if (hf) {
+            json j = json::parse(src->handleDebugCommand("get_direct_sampling", ""), nullptr, false);
+            if (!j.is_discarded() && j.value("mode", 0) == 0) {
+                src->handleDebugCommand("set_direct_sampling", "2");
+                dsByUs = true;
+            }
+        }
+        else if (dsByUs) {
+            src->handleDebugCommand("set_direct_sampling", "0");
+            dsByUs = false;
+        }
+    }
+
+    static void tuneTo(double f, int mode, float bw) {
+        if (!radioExists()) { return; }
+        autoDirectSampling(f);
+        if (mode >= 0 && getMode() != mode) { core::modComManager.callInterface(RADIO_VFO, RADIO_IFACE_CMD_SET_MODE, &mode, NULL); }
+        if (bw > 0) {
+            setBandwidth(bw);
+            if (mode >= 0) { storeBandwidth(cur, mode, bw); }
+            watchedBw = bw;
+        }
+        tuner::tune(tuner::TUNER_MODE_NORMAL, RADIO_VFO, f);
+    }
+
+    static const Band* bandOf(double f) {
+        for (auto& b : HAM_BANDS) {
+            if (f >= b.lo && f <= b.hi) { return &b; }
+        }
+        return NULL;
+    }
+
+    static std::string mhzText(double f, int dec) {
+        char b[32];
+        snprintf(b, sizeof(b), "%.*f", dec, f / 1e6);
+        std::string s = b;
+        for (auto& c : s) { if (c == '.') { c = ','; } }
+        return s;
+    }
+
+    // Régua da faixa: trechos coloridos, marcas e a posição do Rádio. Toque = sintoniza.
+    static void drawRuler(const char* id, double lo, double hi, const std::vector<Seg>& segs, const std::vector<Mark>& marks, double step, int defMode, float defBw) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        float w = flowRight - flowLeft;
+        float h = chipH() * 1.55f;
+        float lineH = ImGui::GetTextLineHeight();
+        ImGui::SetCursorScreenPos(ImVec2(flowLeft, ImGui::GetCursorScreenPos().y));
+        ImVec2 a = ImGui::GetCursorScreenPos();
+        ImVec2 b(a.x + w, a.y + h);
+        bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
+        bool hovered = ImGui::IsItemHovered();
+        // Escala por trechos: cada trecho ganha largura pela raiz do seu tamanho, assim
+        // os estreitos (APRS, CW...) aparecem com nome. Toque e marcas seguem a mesma escala.
+        std::vector<float> sx;   // borda esquerda de cada trecho, em px
+        std::vector<float> sw;   // largura de cada trecho, em px
+        if (!segs.empty()) {
+            double tot = 0;
+            for (auto& sg : segs) { tot += std::sqrt(sg.hi - sg.lo); }
+            float x = a.x;
+            for (auto& sg : segs) {
+                float ww = (float)(std::sqrt(sg.hi - sg.lo) / tot) * w;
+                sx.push_back(x);
+                sw.push_back(ww);
+                x += ww;
+            }
+        }
+        auto xOf = [&](double f) {
+            for (size_t i = 0; i < segs.size(); i++) {
+                if (f >= segs[i].lo && (f < segs[i].hi || i + 1 == segs.size())) {
+                    return sx[i] + (float)((f - segs[i].lo) / (segs[i].hi - segs[i].lo)) * sw[i];
+                }
+            }
+            return a.x + (float)((f - lo) / (hi - lo)) * w;
+        };
+        auto fOf = [&](float x) {
+            for (size_t i = 0; i < segs.size(); i++) {
+                if (x < sx[i] + sw[i] || i + 1 == segs.size()) {
+                    return segs[i].lo + (double)((x - sx[i]) / sw[i]) * (segs[i].hi - segs[i].lo);
+                }
+            }
+            return lo + (double)((x - a.x) / w) * (hi - lo);
+        };
+        float r = 7.0f * style::uiScale;
+        dl->AddRectFilled(a, b, ImGui::GetColorU32(ImGuiCol_FrameBg), r);
+        static const ImU32 SEG_COLORS[] = { IM_COL32(29, 42, 64, 255), IM_COL32(23, 50, 80, 255), IM_COL32(40, 36, 64, 255), IM_COL32(28, 58, 92, 255) };
+        int ci = 0;
+        for (auto& s : segs) {
+            float x0 = xOf(s.lo), x1 = xOf(s.hi);
+            bool apr = std::string(s.name) == "APRS";
+            ImU32 c = apr ? IM_COL32(90, 62, 22, 255) : SEG_COLORS[ci++ % 4];
+            bool L = s.lo <= lo, R = s.hi >= hi;
+            ImDrawFlags fl = (L && R) ? ImDrawFlags_RoundCornersAll : (L ? ImDrawFlags_RoundCornersLeft : (R ? ImDrawFlags_RoundCornersRight : ImDrawFlags_RoundCornersNone));
+            dl->AddRectFilled(ImVec2(x0, a.y), ImVec2(x1, b.y), c, r, fl);
+            if (x1 - x0 > 6) { dl->AddLine(ImVec2(x1, a.y), ImVec2(x1, b.y), ImGui::GetColorU32(ImGuiCol_WindowBg)); }
+            // nome e limites, se couberem
+            float pad = 6.0f * style::uiScale;
+            ImVec2 ts = ImGui::CalcTextSize(s.name);
+            if (x1 - x0 > ts.x + 2 * pad) {
+                dl->PushClipRect(ImVec2(x0, a.y), ImVec2(x1, b.y), true);
+                float ty = (h > 2.2f * lineH) ? a.y + h / 2 - lineH : a.y + (h - lineH) / 2;
+                dl->AddText(ImVec2(x0 + pad, ty), apr ? IM_COL32(246, 196, 120, 255) : ImGui::GetColorU32(ImGuiCol_Text), s.name);
+                std::string rng = mhzText(s.lo, 3) + " - " + mhzText(s.hi, 3);
+                if (h > 2.2f * lineH && x1 - x0 > ImGui::CalcTextSize(rng.c_str()).x + 2 * pad) {
+                    dl->AddText(ImVec2(x0 + pad, ty + lineH), ImGui::GetColorU32(ImGuiCol_TextDisabled), rng.c_str());
+                }
+                dl->PopClipRect();
+            }
+        }
+        if (segs.empty()) {
+            std::string rng = mhzText(lo, 3) + " - " + mhzText(hi, 3) + " MHz";
+            ImVec2 ts = ImGui::CalcTextSize(rng.c_str());
+            dl->AddText(ImVec2(a.x + (w - ts.x) / 2, a.y + (h - ts.y) / 2), ImGui::GetColorU32(ImGuiCol_TextDisabled), rng.c_str());
+        }
+        for (auto& m : marks) {
+            float x = xOf(m.f);
+            dl->AddLine(ImVec2(x, a.y), ImVec2(x, b.y), IM_COL32(240, 162, 74, 255), 2.0f * style::uiScale);
+        }
+        double f0 = radioFreq();
+        if (f0 >= lo && f0 <= hi) {
+            float x = xOf(f0);
+            dl->AddLine(ImVec2(x, a.y - 3), ImVec2(x, b.y + 3), IM_COL32(255, 255, 255, 255), 2.5f * style::uiScale);
+        }
+        // posição sob o mouse: dica e toque
+        if (hovered) {
+            float mx = ImGui::GetIO().MousePos.x;
+            double f = fOf(mx);
+            f = std::round(f / step) * step;
+            f = (std::max)(lo, (std::min)(hi, f));
+            const Seg* seg = NULL;
+            for (auto& s : segs) {
+                if (f >= s.lo && f < s.hi) { seg = &s; }
+            }
+            dl->AddLine(ImVec2(mx, a.y), ImVec2(mx, b.y), IM_COL32(255, 255, 255, 90));
+            ImGui::SetTooltip("%s MHz%s%s", mhzText(f, 4).c_str(), seg ? " · " : "", seg ? seg->name : "");
+            if (clicked) { tuneTo(f, seg ? seg->mode : defMode, seg ? seg->bw : defBw); }
+        }
+        // limites e marcas embaixo
+        ImGui::SetCursorScreenPos(ImVec2(a.x, b.y + 2));
+        ImVec2 la = ImGui::GetCursorScreenPos();
+        ImU32 dim = ImGui::GetColorU32(ImGuiCol_TextDisabled);
+        std::string sl = mhzText(lo, lo < 30e6 ? 3 : 0), sh = mhzText(hi, hi < 30e6 ? 3 : 0);
+        dl->AddText(la, dim, sl.c_str());
+        dl->AddText(ImVec2(a.x + w - ImGui::CalcTextSize(sh.c_str()).x, la.y), dim, sh.c_str());
+        float lastEnd = la.x + ImGui::CalcTextSize(sl.c_str()).x + 12;
+        for (auto& m : marks) {
+            float x = xOf(m.f) - 2;
+            float tw = ImGui::CalcTextSize(m.name).x;
+            if (x < lastEnd || x + tw > a.x + w - ImGui::CalcTextSize(sh.c_str()).x - 8) { continue; }
+            dl->AddText(ImVec2(x, la.y), IM_COL32(240, 162, 74, 255), m.name);
+            lastEnd = x + tw + 12;
+        }
+        ImGui::Dummy(ImVec2(w, lineH));
+    }
+
+    // Botão de atalho (sintoniza direto); fica aceso se o Rádio estiver ali
+    static void shortcut(const char* id, const std::string& label, double f, int mode, float bw, double tol, bool first) {
+        if (!first) { flowNext(chipWidth(label), 4.0f * style::uiScale); }
+        else { ImGui::SetCursorScreenPos(ImVec2(flowLeft, ImGui::GetCursorScreenPos().y)); }
+        bool on = std::fabs(radioFreq() - f) < tol;
+        if (chip(id, label, on)) { tuneTo(f, mode, bw); }
+    }
+
+    static bool inAviation(double f) {
+        return (f >= 108e6 && f <= 137e6) || (f >= 225e6 && f <= 400e6) || (f >= 190e3 && f <= 1750e3);
+    }
+
+    static void drawAviationBand() {
+        double f = radioFreq();
+        drawRuler("##air_ruler", 108e6, 137e6, AIR_PLAN, AIR_MARKS, 25000, AM, 8333);
+        shortcut("##air_nav", "VOR / ILS", 112.000e6, AM, 12500, 4e6, true);
+        shortcut("##air_twr", "Torre e aproximação", 118.100e6, AM, 8333, 1e3, false);
+        shortcut("##air_121", "121,500 emergência", 121.500e6, AM, 8333, 1e3, false);
+        shortcut("##air_acars", "ACARS 131,550", 131.550e6, AM, 12500, 1e3, false);
+        shortcut("##air_mil", "Militar 225-400", 243.000e6, AM, 12500, 1e3, false);
+        if (f > 0 && !inAviation(f)) {
+            std::string l = "Fora da faixa de aviação · voltar";
+            flowNext(chipWidth(l), 12.0f * style::uiScale);
+            if (chip("##air_back", l, true, 0, IM_COL32(245, 176, 65, 255))) { tuneTo(118.100e6, AM, 8333); }
+        }
+    }
+
+    static const Band* hamBandShown = NULL;
+    static void drawHamBand() {
+        double f = radioFreq();
+        const Band* cb = bandOf(f);
+        if (cb) { hamBandShown = cb; }
+        if (!hamBandShown) { hamBandShown = &HAM_BANDS[1]; }
+        float sp = 4.0f * style::uiScale;
+        // botões das faixas: VHF/UHF e HF
+        ImGui::SetCursorScreenPos(ImVec2(flowLeft, ImGui::GetCursorScreenPos().y));
+        groupLabel("VHF / UHF");
+        for (int pass = 0; pass < 2; pass++) {
+            if (pass == 1) {
+                flowNext(chipWidth("HF") + 4, 14.0f * style::uiScale);
+                groupLabel("HF");
+            }
+            for (auto& b : HAM_BANDS) {
+                if (b.hf != (pass == 1)) { continue; }
+                flowNext(chipWidth(b.label), sp);
+                std::string id = std::string("##hb_") + b.label;
+                if (chip(id.c_str(), b.label, cb == &b)) { tuneTo(b.home, b.mode, b.bw); hamBandShown = &b; }
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("%s - %s MHz%s", mhzText(b.lo, 3).c_str(), mhzText(b.hi, 3).c_str(),
+                                      b.hf ? "\nLiga sozinho o modo HF do RTL-SDR v3 (amostragem direta)" : "");
+                }
+            }
+        }
+        const Band& b = *hamBandShown;
+        double step = b.hf ? 500 : (b.lo > 400e6 ? 12500 : 5000);
+        drawRuler("##ham_ruler", b.lo, b.hi, b.plan, {}, step, b.mode, b.bw);
+    }
+
+    // Modos da aba Aviação: o que a aviação usa (não os modos do rádio em si)
+    static void drawAviationModes(int mode, float gap, float sp, bool compact) {
+        double f = radioFreq();
+        bool acars = status.acarsRunning;
+        bool nav = mode == AM && f >= 108e6 && f < 118e6;
+        bool ndb = mode == AM && f > 0 && f < 2e6;
+        bool voice = mode == AM && !nav && !ndb && !acars;
+        if (!compact) {
+            flowNext(chipWidth("MODO") + 4, gap);
+            groupLabel("MODO");
+            flowNext(chipWidth("AM voz"), sp);
+        }
+        if (chip("##am_voz", "AM voz", voice)) {
+            if (acars) { if (auto ac = instanceOf("acars_decoder")) { ac->handleDebugCommand("stop", ""); } }
+            if (f >= 118e6 && f <= 137e6) { selectMode(AM); }
+            else { tuneTo(118.100e6, AM, 8333); }
+        }
+        flowNext(chipWidth("ACARS · CPDLC"), sp);
+        if (chip("##acars", "ACARS · CPDLC", acars)) {
+            if (auto ac = instanceOf("acars_decoder")) { ac->handleDebugCommand(acars ? "stop" : "start", ""); }
+        }
+        if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Mensagens de dados das aeronaves (ACARS). CPDLC e ADS-C chegam dentro dele.\nAs mensagens aparecem no painel ACARS · CPDLC."); }
+        flowNext(chipWidth("VOR · ILS"), sp);
+        if (chip("##vor", "VOR · ILS", nav)) { tuneTo(f >= 108e6 && f < 118e6 ? f : 112.000e6, AM, 12500); }
+        if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Radiofaróis VOR e localizador do ILS: 108 a 117,975 MHz, em AM.\nO indicativo da estação é transmitido em Morse (tom de 1020 Hz)."); }
+        flowNext(chipWidth("NDB · ADF"), sp);
+        if (chip("##ndb", "NDB · ADF", ndb)) { tuneTo(f > 190e3 && f < 1750e3 ? f : 300e3, AM, 3000); }
+        if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Radiofaróis NDB (o ADF do avião): 190 a 1750 kHz, em AM com indicativo em Morse.\nLiga sozinho o modo HF do RTL-SDR v3 (amostragem direta)."); }
+    }
+
     static void drawModeAndBandwidth(bool compact) {
         refreshModes();
         int mode = getMode();
@@ -643,17 +974,20 @@ namespace workspaces {
             for (auto& m : radioModes) { ids.push_back(m.id); }
         }
         bool first = true;
-        if (!compact) { flowNext(chipWidth("MODO") + 4, gap); groupLabel("MODO"); first = false; }
+        if (cur == AVIATION) { drawAviationModes(mode, gap, sp, compact); ids.clear(); }
+        else if (!compact) { flowNext(chipWidth("MODO") + 4, gap); groupLabel("MODO"); first = false; }
         for (int id : ids) {
             const ModeInfo* m = findMode(id);
             if (!m) { continue; }
             std::string label = modeLabel(*m);
+            if (cur == HAM && id == RADIO_IFACE_MODE_NFM) { label = "FM"; }
+            if (cur == HAM && id == MODE_DSD) { label = "DMR · P25"; }
             if (!first) { flowNext(chipWidth(label), sp); }
             first = false;
             std::string cid = "##mode_" + std::to_string(id);
             if (chip(cid.c_str(), label, mode == id)) { selectMode(id); }
         }
-        bool modeInTab = std::find(ids.begin(), ids.end(), mode) != ids.end();
+        bool modeInTab = std::find(ids.begin(), ids.end(), mode) != ids.end() || (cur == AVIATION && mode == AM);
         if (!modeInTab && mode >= 0) {
             // Modo atual não é desta aba (ex.: escolhido em outro painel): mostra mesmo assim
             const ModeInfo* m = findMode(mode);
@@ -785,6 +1119,9 @@ namespace workspaces {
             drawSegmentTabs(tabsW, chipH() + 6.0f * style::uiScale);
         }
         drawModeAndBandwidth(compact);
+        // régua e atalhos da faixa (só nas abas de uso)
+        if (cur == AVIATION) { drawAviationBand(); }
+        else if (cur == HAM) { drawHamBand(); }
 
         ImGui::PopClipRect();
         ImGui::EndGroup();

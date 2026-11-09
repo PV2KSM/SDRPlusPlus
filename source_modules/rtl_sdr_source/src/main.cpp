@@ -114,6 +114,39 @@ public:
         return enabled;
     }
 
+    // Amostragem direta (modo HF do RTL-SDR v3): as abas ligam sozinhas abaixo de 24 MHz
+    std::string handleDebugCommand(const std::string& cmd, const std::string& args) override {
+        if (cmd == "get_direct_sampling") {
+            return "{\"mode\":" + std::to_string(directSamplingMode) + "}";
+        }
+        if (cmd == "set_direct_sampling") {
+            int m = std::atoi(args.c_str());
+            if (m < 0 || m > 2) { return "{\"error\":\"mode 0..2\"}"; }
+            if (m != directSamplingMode) {
+                directSamplingMode = m;
+                if (running) {
+                    rtlsdr_set_direct_sampling(openDev, directSamplingMode);
+                    // mesmo acerto de ganho do menu (bug da librtlsdr ao sair do modo direto)
+                    if (directSamplingMode == 0) {
+                        rtlsdr_set_agc_mode(openDev, rtlAgc);
+                        if (tunerAgc) { rtlsdr_set_tuner_gain_mode(openDev, 0); }
+                        else {
+                            rtlsdr_set_tuner_gain_mode(openDev, 1);
+                            rtlsdr_set_tuner_gain(openDev, gainList[gainId]);
+                        }
+                    }
+                }
+                if (selectedDevName != "") {
+                    config.acquire();
+                    config.conf["devices"][selectedDevName]["directSampling"] = directSamplingMode;
+                    config.release(true);
+                }
+            }
+            return "{\"mode\":" + std::to_string(directSamplingMode) + "}";
+        }
+        return ModuleManager::Instance::handleDebugCommand(cmd, args);
+    }
+
     void refresh() {
         devNames.clear();
         devListTxt = "";
