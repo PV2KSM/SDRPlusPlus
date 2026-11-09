@@ -8,6 +8,10 @@
 #include <dsp/audio/volume.h>
 #include <dsp/convert/stereo_to_mono.h>
 #include <thread>
+#include <deque>
+#include <atomic>
+#include <chrono>
+#include <mutex>
 #include <ctime>
 #include <gui/gui.h>
 #include <filesystem>
@@ -93,6 +97,9 @@ public:
         }
         if (config.conf[name].contains("stereo")) {
             stereo = config.conf[name]["stereo"];
+        }
+        if (config.conf[name].contains("perTransmission")) {
+            perTx = config.conf[name]["perTransmission"];
         }
         if (config.conf[name].contains("ignoreSilence")) {
             ignoreSilence = config.conf[name]["ignoreSilence"];
@@ -186,12 +193,21 @@ public:
         // Open file
         std::string vfoName = (recMode == RECORDER_MODE_AUDIO) ? selectedStreamName : "";
         std::string extension = ".wav";
-        std::string expandedPath = expandString(folderSelect.path + "/" + genFileName(nameTemplate, recMode, vfoName) + extension);
-        if (!writer.open(expandedPath)) {
-            flog::error("Failed to open file for recording: {0}", expandedPath);
-            return;
+        txMode = perTx && recMode == RECORDER_MODE_AUDIO;
+        if (txMode) {
+            // uma gravação por transmissão: o arquivo abre quando alguém fala
+            txDir = expandString(folderSelect.path);
+            txOpen = false;
+            currentFile = "";
         }
-        currentFile = expandedPath;
+        else {
+            std::string expandedPath = expandString(folderSelect.path + "/" + genFileName(nameTemplate, recMode, vfoName) + extension);
+            if (!writer.open(expandedPath)) {
+                flog::error("Failed to open file for recording: {0}", expandedPath);
+                return;
+            }
+            currentFile = expandedPath;
+        }
 
         // Open audio stream or baseband
         if (recMode == RECORDER_MODE_AUDIO) {
@@ -236,7 +252,8 @@ public:
         }
 
         // Close file
-        writer.close();
+        if (txMode) { txClose(); }
+        else { writer.close(); }
         
         recording = false;
     }
@@ -349,6 +366,17 @@ private:
                 config.conf[_this->name]["ignoreSilence"] = _this->ignoreSilence;
                 config.release(true);
             }
+            if (_this->recording) { style::beginDisabled(); }
+            if (ImGui::Checkbox(CONCAT("Uma gravação por transmissão##_recorder_pertx_", _this->name), &_this->perTx)) {
+                config.acquire();
+                config.conf[_this->name]["perTransmission"] = _this->perTx;
+                config.release(true);
+            }
+            if (_this->recording) { style::endDisabled(); }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Cria um arquivo para cada vez que alguém fala (com hora e frequência no nome).\n"
+                                  "Ligue o squelch no FM/AM para o silêncio entre as falas ser detectado.");
+            }
         }
 
         // Record button
@@ -368,11 +396,34 @@ private:
             time_t diff = seconds;
             tm* dtm = gmtime(&diff);
 
-            if (_this->ignoreSilence && _this->ignoringSilence) {
+            if (_this->txMode) {
+                if (_this->txOpen) { ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "Gravando transmissão %02d:%02d", dtm->tm_min, dtm->tm_sec); }
+                else { ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Esperando alguém falar · %d gravadas", _this->txCount); }
+            }
+            else if (_this->ignoreSilence && _this->ignoringSilence) {
                 ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "Paused %02d:%02d:%02d", dtm->tm_hour, dtm->tm_min, dtm->tm_sec);
             }
             else {
                 ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "Recording %02d:%02d:%02d", dtm->tm_hour, dtm->tm_min, dtm->tm_sec);
+            }
+        }
+
+        // transmissões gravadas (as mais novas primeiro)
+        if (_this->perTx && _this->recMode == RECORDER_MODE_AUDIO) {
+            std::lock_guard<std::mutex> lck(_this->txListMtx);
+            if (ImGui::TreeNodeEx(CONCAT("##_recorder_txlist_", _this->name), ImGuiTreeNodeFlags_DefaultOpen, "Transmissões gravadas (%d)", (int)_this->txList.size())) {
+                if (_this->txList.empty()) { ImGui::TextDisabled("Nenhuma ainda."); }
+                int i = 0;
+                for (auto& r : _this->txList) {
+                    if (i++ >= 12) { break; }
+                    char tb[16];
+                    tm* t = localtime(&r.wall);
+                    strftime(tb, sizeof(tb), "%H:%M:%S", t);
+                    ImGui::Text("%s  %.4f MHz  %.0f s", tb, r.freq / 1e6, r.seconds);
+                    if (ImGui::IsItemHovered()) { ImGui::SetTooltip("%s", r.file.c_str()); }
+                }
+                ImGui::TextDisabled("Pasta: %s", _this->expandString(_this->folderSelect.path).c_str());
+                ImGui::TreePop();
             }
         }
     }
@@ -551,8 +602,84 @@ private:
         _this->writer.write((float*)data, count);
     }
 
+    // ---- uma gravação por transmissão
+    struct TxRec {
+        std::string file;
+        time_t wall;
+        double freq;
+        double seconds;
+    };
+
+    static double nowSec() {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+
+    double streamFreq() {
+        double f = gui::waterfall.getCenterFrequency();
+        if (sigpath::vfoManager.vfoExists(selectedStreamName)) { f += sigpath::vfoManager.getOffset(selectedStreamName); }
+        return f;
+    }
+
+    void txOpenFile() {
+        time_t now = time(0);
+        tm* t = (timezones[timezoneId] == TIME_ZONE_UTC) ? gmtime(&now) : localtime(&now);
+        double f = streamFreq();
+        char buf[128];
+        snprintf(buf, sizeof(buf), "/tx_%04d-%02d-%02d_%02d-%02d-%02d_%.4fMHz.wav", t->tm_year + 1900, t->tm_mon + 1, t->tm_mday,
+                 t->tm_hour, t->tm_min, t->tm_sec, f / 1e6);
+        std::string path = txDir + buf;
+        if (!writer.open(path)) {
+            flog::error("Gravação por transmissão: não abriu {}", path);
+            return;
+        }
+        txOpen = true;
+        txStart = nowSec();
+        txWall = now;
+        txFreq = f;
+        currentFile = path;
+    }
+
+    void txClose() {
+        if (!txOpen) { return; }
+        writer.close();
+        txOpen = false;
+        double dur = txLastActive - txStart;
+        if (dur < 0.4) {
+            // estalo do squelch, não é fala
+            std::error_code ec;
+            std::filesystem::remove(currentFile, ec);
+            return;
+        }
+        std::lock_guard<std::mutex> lck(txListMtx);
+        txList.push_front({ currentFile, txWall, txFreq, dur });
+        while (txList.size() > 200) { txList.pop_back(); }
+        txCount++;
+    }
+
+    // Chamado pelo áudio: abre ao começar a fala, fecha 1,5 s depois que ela acaba
+    bool txFeed(float absMax) {
+        double now = nowSec();
+        bool active = absMax >= SILENCE_LVL;
+        if (active) {
+            txLastActive = now;
+            if (!txOpen) { txOpenFile(); }
+        }
+        else if (txOpen && now - txLastActive > 1.5) {
+            txClose();
+        }
+        ignoringSilence = !txOpen;
+        return txOpen;
+    }
+
     static void stereoHandler(dsp::stereo_t* data, int count, void* ctx) {
         RecorderModule* _this = (RecorderModule*)ctx;
+        if (_this->txMode) {
+            float absMax = 0.0f;
+            float* _data = (float*)data;
+            for (int i = 0; i < count * 2; i++) { absMax = (std::max)(absMax, fabsf(_data[i])); }
+            if (_this->txFeed(absMax)) { _this->writer.write((float*)data, count); }
+            return;
+        }
         if (_this->ignoreSilence) {
             float absMax = 0.0f;
             float* _data = (float*)data;
@@ -569,6 +696,12 @@ private:
 
     static void monoHandler(float* data, int count, void* ctx) {
         RecorderModule* _this = (RecorderModule*)ctx;
+        if (_this->txMode) {
+            float absMax = 0.0f;
+            for (int i = 0; i < count; i++) { absMax = (std::max)(absMax, fabsf(data[i])); }
+            if (_this->txFeed(absMax)) { _this->writer.write(data, count); }
+            return;
+        }
         if (_this->ignoreSilence) {
             float absMax = 0.0f;
             for (int i = 0; i < count; i++) {
@@ -591,7 +724,9 @@ private:
             return "{\"status\":\"stopped\"}";
         }
         if (cmd == "status") {
-            return "{\"recording\":" + std::string(recording ? "true" : "false") + ",\"file\":\"" + currentFile + "\"}";
+            return "{\"recording\":" + std::string(recording ? "true" : "false") + ",\"file\":\"" + currentFile + "\"" +
+                   ",\"per_transmission\":" + (txMode ? "true" : "false") + ",\"tx_open\":" + (txOpen ? "true" : "false") +
+                   ",\"tx_count\":" + std::to_string(txCount) + "}";
         }
         if (cmd == "set_timezone") {
             if (!timezones.keyExists(args)) { return "{\"status\":\"invalid\"}"; }
@@ -650,6 +785,15 @@ private:
 
     bool recording = false;
     bool ignoringSilence = false;
+    bool perTx = false;                  // opção: uma gravação por transmissão
+    bool txMode = false;                 // em uso nesta gravação
+    std::atomic<bool> txOpen { false };
+    double txStart = 0, txLastActive = 0, txFreq = 0;
+    time_t txWall = 0;
+    std::string txDir;
+    std::mutex txListMtx;
+    std::deque<TxRec> txList;
+    int txCount = 0;
     wav::Writer writer;
     std::recursive_mutex recMtx;
     dsp::stream<dsp::complex_t>* basebandStream;
