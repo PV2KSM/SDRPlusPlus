@@ -66,6 +66,17 @@ namespace dsp {
         // Erro de frequência corrigido no momento (Hz). Positivo: sinal acima da sintonia.
         std::atomic<float> offsetHz { 0.0f };
         std::atomic<bool> locked { false };
+        // Há um sinal de envoltória estável no canal (serve de porta para o slicer adaptativo)
+        std::atomic<bool> carrier { false };
+
+        // Começa a correção já num valor conhecido (erro de ppm aprendido em outro sinal)
+        void setOffset(double hz) {
+            if (hz > _maxOffset) { hz = _maxOffset; }
+            if (hz < -_maxOffset) { hz = -_maxOffset; }
+            _freq = hz;
+            _lost = 0;
+            offsetHz = (float)hz;
+        }
 
         int run() {
             int count = base_type::_in->read();
@@ -184,6 +195,7 @@ namespace dsp {
             _lastMean = meanD;
             // CQPSK não tem envoltória constante: limite mais folgado
             bool carrier = envVar < (_cqpsk ? 0.8 : 0.55);
+            this->carrier = carrier;
             double err = meanD * _sr / 6.283185307179586;   // Hz
             locked = carrier && std::fabs(err) < 300.0;
             if (!_afcOn) { return; }

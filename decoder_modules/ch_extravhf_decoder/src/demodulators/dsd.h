@@ -29,8 +29,13 @@
 // 12 amostras por símbolo (57,6 kHz): cabe um VFO de até 50 kHz, para achar
 // sinais bem fora do centro (erro de ppm grande); o filtro do canal fica no AFC
 #define INSR                   (4800.0f * 12)
-#define CLOCK_RECOVERY_BW      0.1f
-#define CLOCK_RECOVERY_DAMPN_F 1.0f
+// Ganhos do laço de relógio de símbolo. O detector de erro (derivada entre fases
+// vizinhas do interpolador) dá valores bem pequenos; com os ganhos antigos
+// (0,33 / 0,033) o laço quase não corrigia: em sinal fraco, ou com o relógio do
+// RTL-SDR 100 ppm fora, o instante de amostragem ficava vagando e a taxa de erro
+// de símbolo passava de 10%. Medido com o bloco real: 9 dB de SNR, DMR 22% -> 0,7%.
+#define CLOCK_RECOVERY_MU_GAIN    16.0f
+#define CLOCK_RECOVERY_OMEGA_GAIN 0.02f
 #define CLOCK_RECOVERY_REL_LIM 0.001f
 #define RRC_TAP_COUNT          157
 #define RRC_ALPHA              0.23f
@@ -63,6 +68,9 @@ namespace demod {
             std::string slot1_type = "";
             std::string mbe_errorbar = "";
             float offset_hz = 0;      // erro de frequência corrigido pelo AFC
+            bool carrier = false;     // há portadora estável no canal
+            bool locked = false;      // AFC assentado
+            bool cqpsk = false;       // demodulando como simulcast (CQPSK)
             uint32_t src = 0, dst = 0;  // última chamada (LC)
             bool group = true, emergency = false, privacy = false;
             int lc_slot = -1;
@@ -97,11 +105,6 @@ namespace demod {
 
             // Define structure
 
-            float recov_bandwidth = CLOCK_RECOVERY_BW;
-            float recov_dampningFactor = CLOCK_RECOVERY_DAMPN_F;
-            float recov_denominator = (1.0f + 2.0 * recov_dampningFactor * recov_bandwidth + recov_bandwidth * recov_bandwidth);
-            float recov_mu = (4.0f * recov_dampningFactor * recov_bandwidth) / recov_denominator;
-            float recov_omega = (4.0f * recov_bandwidth * recov_bandwidth) / recov_denominator;
             // FM com AFC: segue até 7 kHz de erro do RTL-SDR e filtra só o canal 4FSK
             if (bandwidth > 0) { bw = (float)bandwidth; }
             quadDemod.init(input, 1944.0f, INSR, AFC_CUTOFF, afcMaxOffset(bw));
@@ -112,7 +115,7 @@ namespace demod {
             passTaps.taps[0] = 1.0f;
             if (cqpskMode) { applyCqpsk(true); }
             decoder.dmrtrunk.setChannelMap(channelMap);
-            clockRecov.init(&rrcFilt.out, INSR / 4800.0f, recov_omega, recov_mu, CLOCK_RECOVERY_REL_LIM, 32, 8);
+            clockRecov.init(&rrcFilt.out, INSR / 4800.0f, CLOCK_RECOVERY_OMEGA_GAIN, CLOCK_RECOVERY_MU_GAIN, CLOCK_RECOVERY_REL_LIM, 32, 8);
             constDiagSplitter.init(&clockRecov.out);
             constDiagSplitter.bindStream(&constDiagStream);
             constDiagSplitter.bindStream(&demodStream);
@@ -120,6 +123,7 @@ namespace demod {
             constDiagReshaper.init(&constDiagStream, 1024, 0);
             constDiagSink.init(&constDiagReshaper.out, _constDiagSinkHandler, this);
 
+            slicer.carrier = &quadDemod.carrier;
             slicer.init(&demodStream);
 
             decoder.init(&slicer.out);
@@ -144,6 +148,9 @@ namespace demod {
             st.slot1_type = dmr_st.dmr_status_s1_lasttype;
             st.mbe_errorbar = mbe_st.mbe_status_errorbar;
             st.offset_hz = quadDemod.offsetHz;
+            st.carrier = quadDemod.carrier;
+            st.locked = quadDemod.locked;
+            st.cqpsk = quadDemod.cqpsk();
             st.src = dmr_st.dmr_status_src;
             st.dst = dmr_st.dmr_status_dst;
             st.group = dmr_st.dmr_status_group;
@@ -215,6 +222,13 @@ namespace demod {
                 it->second->quadDemod.setEnabled(false);
                 it->second->quadDemod.setEnabled(true);
             }
+        }
+
+        // Parte a correção do AFC de um valor conhecido (ppm aprendido)
+        static void presetAfcForRadio(const std::string& radioName, double hz) {
+            std::lock_guard<std::mutex> lock(registryMtx);
+            auto it = instances.find(radioName);
+            if (it != instances.end() && it->second) { it->second->quadDemod.setOffset(hz); }
         }
 
         static void setCqpskAll(bool on) {

@@ -56,6 +56,13 @@ public:
         skipEncrypted = config.conf.value("skipEncrypted", true);
         tgFilter = config.conf.value("tgFilter", std::string());
         cqpsk = config.conf.value("cqpsk", false);
+        // 0 = automática, 1 = C4FM/4FSK, 2 = simulcast. Quem já tinha ligado o simulcast continua nele.
+        demodMode = config.conf.value("demodMode", cqpsk ? 2 : 0);
+        if (demodMode < 0 || demodMode > 2) { demodMode = 0; }
+        if (demodMode != 0) { cqpsk = (demodMode == 2); }
+        afcPpm = config.conf.value("afcPpm", 0.0);
+        afcPpmSaved = afcPpm;
+        havePpm = config.conf.contains("afcPpm");
         if (config.conf.contains("channelMap") && config.conf["channelMap"].is_object()) {
             for (auto& [k, v] : config.conf["channelMap"].items()) {
                 try { if (v.is_number()) { chanMap[std::stoi(k)] = v.get<double>() * 1e6; } } catch (...) {}
@@ -128,6 +135,11 @@ public:
 
     float afcShown = 0;        // AFC suavizado para a tela (não pula)
     bool cqpsk = false;
+    int demodMode = 0;         // 0 automática, 1 C4FM/4FSK, 2 simulcast (CQPSK)
+    double autoFreq = 0, autoLast = 0, autoBad = 0, autoWait = 2.0;
+    int autoTries = 0;
+    double afcPpm = 0, afcPpmSaved = 0;   // erro do receptor aprendido nos sinais já decodificados
+    bool havePpm = false;
     bool callActive = false;
     Call cur;
     std::deque<Call> calls;
@@ -388,6 +400,8 @@ private:
                "\",\"slot1_type\":\"" + escapeJson(st.slot1_type) +
                "\",\"mbe_errorbar\":\"" + escapeJson(st.mbe_errorbar) +
                "\",\"offset_hz\":" + std::to_string((int)st.offset_hz) +
+               ",\"carrier\":" + (st.carrier ? "true" : "false") +
+               ",\"cqpsk\":" + (st.cqpsk ? "true" : "false") +
                ",\"src\":" + std::to_string(st.src) + ",\"dst\":" + std::to_string(st.dst) +
                ",\"group\":" + (st.group ? "true" : "false") + ",\"emergency\":" + (st.emergency ? "true" : "false") +
                ",\"privacy\":" + (st.privacy ? "true" : "false") + ",\"lc_slot\":" + std::to_string(st.lc_slot) +
@@ -427,8 +441,70 @@ private:
 
     static void onFrame(ImGuiContext* ctx, void* p) {
         ((VhfVoiceRadioModule*)p)->followStep();
+        ((VhfVoiceRadioModule*)p)->autoStep();
         ((VhfVoiceRadioModule*)p)->trackCalls();
         ((VhfVoiceRadioModule*)p)->identifyStep();
+    }
+
+    // ------------------------------------------------------------------ ajuste automático
+    // Ao abrir um sinal: (1) já começa o AFC no erro de ppm aprendido nos sinais
+    // anteriores, em vez de procurar do zero; (2) se há portadora mas nada decodifica
+    // (ou o P25 só dá quadros ilegíveis), alterna sozinho entre C4FM/4FSK e simulcast.
+    void autoStep() {
+        demod::DSD::DebugStatus st;
+        if (!demod::DSD::getStatusForRadio("Radio", st)) {
+            autoFreq = 0;
+            return;
+        }
+        double now = nowSec();
+        double dt = now - autoLast;
+        autoLast = now;
+        if (dt < 0 || dt > 0.5) { dt = 0; }
+        double f = radioFreq();
+        if (f <= 0) { return; }
+        if (std::fabs(f - autoFreq) > 1000.0) {
+            // frequência nova: zera a contagem e parte do ppm conhecido
+            autoFreq = f;
+            autoBad = 0;
+            autoWait = 2.0;
+            autoTries = 0;
+            if (havePpm) { demod::DSD::presetAfcForRadio("Radio", afcPpm * 1e-6 * f); }
+            return;
+        }
+        bool p25bad = st.p25 && (st.p25_type == "UNK" || st.p25_type.empty());
+        bool good = st.sync && !p25bad;
+        if (good) {
+            autoBad = 0;
+            autoWait = 2.0;
+            autoTries = 0;
+            if (st.locked) {
+                double ppm = (double)st.offset_hz / f * 1e6;
+                if (!havePpm) { afcPpm = ppm; havePpm = true; }
+                else { afcPpm += 0.02 * (ppm - afcPpm); }
+                if (std::fabs(afcPpm - afcPpmSaved) > 0.5) {
+                    afcPpmSaved = afcPpm;
+                    saveConfig();
+                }
+            }
+            return;
+        }
+        if (demodMode != 0) { return; }
+        if (!st.carrier) {
+            autoBad = 0;
+            return;
+        }
+        autoBad += dt;
+        if (autoBad < autoWait) { return; }
+        // portadora sem decodificar: tenta a outra demodulação. Se nenhuma serve
+        // (sinal analógico, outro sistema), vai espaçando as tentativas.
+        autoBad = 0;
+        if (++autoTries >= 2) {
+            autoTries = 0;
+            autoWait = (std::min)(autoWait * 2.0, 16.0);
+        }
+        cqpsk = !cqpsk;
+        demod::DSD::setCqpskAll(cqpsk);
+        flog::info("DSD automático: tentando {}", cqpsk ? "simulcast (CQPSK)" : "C4FM/4FSK");
     }
 
     // ------------------------------------------------------------------ registro de chamadas
@@ -605,20 +681,27 @@ private:
         afcShown += 0.25f * (st.offset_hz - afcShown);
         float afcKhz = std::round(afcShown / 100.0f) / 10.0f;   // passo de 0,1 kHz
         ImGui::TextColored(dim, "Correção de frequência (AFC): %+.1f kHz", afcKhz);
-        if (ImGui::Checkbox("Simulcast (LSM/CQPSK)##cqpsk", &cqpsk)) {
-            demod::DSD::setCqpskAll(cqpsk);
+        ImGui::LeftLabel("Demodulação");
+        ImGui::FillWidth();
+        if (ImGui::Combo("##dsd_demod_mode", &demodMode, "Automática\0C4FM / 4FSK (DMR, P25 comum)\0Simulcast (LSM/CQPSK)\0")) {
+            if (demodMode != 0) {
+                cqpsk = (demodMode == 2);
+                demod::DSD::setCqpskAll(cqpsk);
+            }
+            autoBad = 0;
+            autoWait = 2.0;
+            autoTries = 0;
             saveConfig();
         }
         if (ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Para P25 de várias torres na mesma frequência (comum em segurança pública).\n"
-                              "Sinal: sincroniza, mas a constelação vira uma faixa contínua e o DUID sai 'UNK'.\n"
-                              "Deixe desligado para DMR e P25 comum (C4FM).");
+            ImGui::SetTooltip("Automática: se há portadora e nada decodifica, o programa troca sozinho entre\n"
+                              "C4FM/4FSK (DMR e P25 comum) e simulcast (P25 de várias torres na mesma frequência).\n"
+                              "Escolha um dos dois só se quiser travar.");
         }
-        if (st.p25 && st.p25_type == "UNK" && !cqpsk) {
-            ImGui::PushTextWrapPos(0);
-            ImGui::TextColored(amber, "Quadros P25 ilegíveis: se for simulcast, ligue a opção acima.");
-            ImGui::PopTextWrapPos();
-        }
+        // linha sempre presente (não pode aparecer/sumir, senão o painel salta)
+        if (demodMode == 0) { ImGui::TextColored(dim, "Em uso: %s", cqpsk ? "simulcast (CQPSK)" : "C4FM / 4FSK"); }
+        else if (st.p25 && st.p25_type == "UNK") { ImGui::TextColored(amber, "Quadros P25 ilegíveis: tente Automática"); }
+        else { ImGui::TextColored(dim, "Travado nesta demodulação"); }
         if (callActive) {
             double dur = nowSec() - cur.start;
             ImGui::TextColored(amber, "Chamada %s em andamento · %.0f s", cur.group ? "de grupo" : "privada", dur);
@@ -1064,6 +1147,8 @@ private:
         config.conf["skipEncrypted"] = skipEncrypted;
         config.conf["tgFilter"] = tgFilter;
         config.conf["cqpsk"] = cqpsk;
+        config.conf["demodMode"] = demodMode;
+        if (havePpm) { config.conf["afcPpm"] = afcPpm; }
         json cm = json::object();
         for (auto& [k, v] : chanMap) { cm[std::to_string(k)] = v / 1e6; }
         config.conf["channelMap"] = cm;
