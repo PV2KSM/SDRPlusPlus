@@ -144,6 +144,23 @@ public:
             }
             return "{\"mode\":" + std::to_string(directSamplingMode) + "}";
         }
+        // correção de ppm (o DMR/P25 mede o erro do cristal e ajusta sozinho)
+        if (cmd == "get_ppm") {
+            return "{\"ppm\":" + std::to_string(ppm) + ",\"running\":" + (running ? "true" : "false") + "}";
+        }
+        if (cmd == "set_ppm") {
+            int v = std::clamp<int>(std::atoi(args.c_str()), -1000, 1000);
+            if (v != ppm) {
+                ppm = v;
+                if (running) { rtlsdr_set_freq_correction(openDev, ppm); }
+                if (selectedDevName != "") {
+                    config.acquire();
+                    config.conf["devices"][selectedDevName]["ppm"] = ppm;
+                    config.release(true);
+                }
+            }
+            return "{\"ppm\":" + std::to_string(ppm) + "}";
+        }
         return ModuleManager::Instance::handleDebugCommand(cmd, args);
     }
 

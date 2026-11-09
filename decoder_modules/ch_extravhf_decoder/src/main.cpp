@@ -64,6 +64,9 @@ public:
         afcPpm = config.conf.value("afcPpm", 0.0);
         afcPpmSaved = afcPpm;
         havePpm = config.conf.contains("afcPpm");
+        autoPpm = config.conf.value("autoPpm", true);
+        ppmDir = config.conf.value("ppmDir", 1);
+        if (ppmDir != 1 && ppmDir != -1) { ppmDir = 1; }
         if (config.conf.contains("channelMap") && config.conf["channelMap"].is_object()) {
             for (auto& [k, v] : config.conf["channelMap"].items()) {
                 try { if (v.is_number()) { chanMap[std::stoi(k)] = v.get<double>() * 1e6; } } catch (...) {}
@@ -144,6 +147,13 @@ public:
     int autoTries = 0;
     double afcPpm = 0, afcPpmSaved = 0;   // erro do receptor aprendido nos sinais já decodificados
     bool havePpm = false;
+    // Correção de ppm do RTL-SDR (vale para todos os modos), medida no AFC do DMR/P25
+    bool autoPpm = true;
+    int ppmDir = 1;            // sentido da correção (confere sozinho e inverte se errado)
+    double ppmAcc = 0, ppmHold = 0, ppmLastAbs = 0;
+    int ppmN = 0, ppmLastStep = 0;
+    bool ppmCheck = false;
+    std::string ppmMsg;
     bool callActive = false;
     Call cur;
     std::deque<Call> calls;
@@ -483,6 +493,7 @@ private:
             autoTries = 0;
             if (st.locked) {
                 double ppm = (double)st.offset_hz / f * 1e6;
+                if (autoPpm) { ppmStep(ppm, now); }
                 if (!havePpm) { afcPpm = ppm; havePpm = true; }
                 else { afcPpm += 0.02 * (ppm - afcPpm); }
                 if (std::fabs(afcPpm - afcPpmSaved) > 0.5) {
@@ -509,6 +520,58 @@ private:
         cqpsk = !cqpsk;
         demod::DSD::setCqpskAll(cqpsk);
         flog::info("DSD automático: tentando {}", cqpsk ? "simulcast (CQPSK)" : "C4FM/4FSK");
+    }
+
+    static ModuleManager::Instance* rtlSource() {
+        for (auto& [n, inst] : core::moduleManager.instances) {
+            if (inst.module.info && inst.instance && std::string(inst.module.info->name) == "rtl_sdr_source") { return inst.instance; }
+        }
+        return NULL;
+    }
+
+    // Passa o erro medido para o "PPM Correction" do RTL-SDR, em passos inteiros.
+    // O sentido é conferido: se depois do ajuste o erro não cai, inverte e corrige.
+    void ppmStep(double residual, double now) {
+        if (now < ppmHold) { return; }
+        ppmAcc += residual;
+        if (++ppmN < 120) { return; }   // ~2 s de medidas
+        double avg = ppmAcc / ppmN;
+        ppmAcc = 0;
+        ppmN = 0;
+        auto src = rtlSource();
+        if (!src) { return; }
+        json j = json::parse(src->handleDebugCommand("get_ppm", ""), nullptr, false);
+        if (j.is_discarded() || !j.value("running", false)) { return; }
+        int cur = j.value("ppm", 0);
+        int next = cur;
+        if (ppmCheck) {
+            ppmCheck = false;
+            if (std::fabs(avg) >= 1.0 && std::fabs(avg) > ppmLastAbs * 0.7) {
+                // piorou: o sentido estava trocado. Desfaz e aplica ao contrário.
+                ppmDir = -ppmDir;
+                next = cur - 2 * ppmLastStep;
+                flog::info("ppm automático: sentido invertido, {} -> {}", cur, next);
+            }
+        }
+        else if (std::fabs(avg) >= 1.0) {
+            int stepv = (int)std::lround(-avg * ppmDir);
+            next = cur + stepv;
+            ppmLastStep = stepv;
+            ppmLastAbs = std::fabs(avg);
+            ppmCheck = true;
+            flog::info("ppm automático: erro {:.1f} ppm, {} -> {}", avg, cur, next);
+        }
+        if (next != cur) {
+            src->handleDebugCommand("set_ppm", std::to_string(next));
+            char b[96];
+            snprintf(b, sizeof(b), "RTL-SDR ajustado para %d ppm", next);
+            ppmMsg = b;
+            // o resíduo muda: reaprende e espera o AFC assentar
+            havePpm = false;
+            afcPpm = 0;
+            ppmHold = now + 3.0;
+            saveConfig();
+        }
     }
 
     // ------------------------------------------------------------------ registro de chamadas
@@ -694,6 +757,12 @@ private:
         afcShown += 0.25f * (st.offset_hz - afcShown);
         float afcKhz = std::round(afcShown / 100.0f) / 10.0f;   // passo de 0,1 kHz
         ImGui::TextColored(dim, "Correção de frequência (AFC): %+.1f kHz", afcKhz);
+        if (ImGui::Checkbox("Corrigir o ppm do RTL-SDR sozinho##autoppm", &autoPpm)) { saveConfig(); }
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip("Usa o erro medido nos sinais DMR/P25 para ajustar o 'PPM Correction' do RTL-SDR.\n"
+                              "Assim o AM da aviação e o FM também caem certinho na frequência.");
+        }
+        ImGui::TextColored(dim, "%s", ppmMsg.empty() ? "ppm: aguardando um sinal DMR/P25 estável" : ppmMsg.c_str());
         ImGui::LeftLabel("Demodulação");
         ImGui::FillWidth();
         if (ImGui::Combo("##dsd_demod_mode", &demodMode, "Automática\0C4FM / 4FSK (DMR, P25 comum)\0Simulcast (LSM/CQPSK)\0")) {
@@ -1245,6 +1314,8 @@ private:
         config.conf["tgFilter"] = tgFilter;
         config.conf["cqpsk"] = cqpsk;
         config.conf["demodMode"] = demodMode;
+        config.conf["autoPpm"] = autoPpm;
+        config.conf["ppmDir"] = ppmDir;
         if (havePpm) { config.conf["afcPpm"] = afcPpm; }
         json cm = json::object();
         for (auto& [k, v] : chanMap) { cm[std::to_string(k)] = v / 1e6; }
