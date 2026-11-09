@@ -8,6 +8,8 @@
 #include <dsp/loop/costas.h>
 #include <dsp/loop/fast_agc.h>
 #include <dsp/taps/root_raised_cosine.h>
+#include <atomic>
+#include <cmath>
 
 namespace dsp {
 
@@ -20,7 +22,12 @@ namespace dsp {
 
         FourFSKExtractor(stream<float>* in) {init(in);}
 
+        // Limiares adaptativos: num 4FSK com dados aleatórios a média de |símbolo|
+        // cai exatamente no meio entre o nível interno e o externo (2/3 do externo).
+        // Rádios reais desviam 10-20% a mais ou a menos que o nominal; com limiar fixo
+        // isso multiplica os erros de símbolo. Só aprende enquanto há portadora.
         inline int process(int count, const float* in, uint8_t* out) {
+            bool learn = !carrier || carrier->load();
             for(int i = 0; i < count; i++) {
                 float sym_c = in[i];
                 if(sym_c >= umid) {
@@ -32,36 +39,23 @@ namespace dsp {
                 } else {
                     out[i] = 0b11;
                 }
-                lbuf2[lbuf2idx] = sym_c;
-                lbuf2idx = (lbuf2idx+1) % LVL_BUFF;
-                float lmax = 0;
-                float lmin = 0;
-                for(int i = 0; i < 24; i++) {
-                    if(lbuf2[i] > lmax) {
-                        lmax = lbuf2[i];
-                    } else if(lbuf2[i] < lmin) {
-                        lmin = lbuf2[i];
-                    }
+                float a = fabsf(sym_c);
+                if (learn && a < 2.0f) {
+                    absAvg += (a - absAvg) * (1.0f / 256.0f);
                 }
-                //WORKS BETTER WITHOUT AFC
-//                max += (lmax - max) * 0.01f;
-//                min += (lmin - min) * 0.01f;
-                if(max >= 1.3f) {
-                    max = 1.3f;
-                } else if(max <= -1.3f) {
-                    max = -1.3f;
-                }
-                if(min >= 1.3f) {
-                    min = 1.3f;
-                } else if(min <= -1.3f) {
-                    min = -1.3f;
-                }
-                center = ((max) + (min)) * 0.5f;
-                umid = (((max) - center) * mid) + center;
-                lmid = (((min) - center) * mid) + center;
             }
+            float th = absAvg;
+            if (th < 0.4f) { th = 0.4f; }
+            if (th > 0.95f) { th = 0.95f; }
+            umid = center + th;
+            lmid = center - th;
+            max = center + th * 1.5f;
+            min = center - th * 1.5f;
             return count;
         }
+
+        // porta do aprendizado (portadora presente); nullptr = sempre aprende
+        std::atomic<bool>* carrier = nullptr;
 
         int run() {
             int count = base_type::_in->read();
@@ -85,8 +79,7 @@ namespace dsp {
         float mid = 0.6f;
 
     private:
-        int lbuf2idx = 0;
-        float lbuf2[LVL_BUFF];
+        float absAvg = 0.625f;
 
     };
 }
