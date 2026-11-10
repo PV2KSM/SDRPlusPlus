@@ -686,7 +686,13 @@ namespace workspaces {
     // Radioamador no Brasil: limites da Resolução Anatel 697/2018; plano de 2 m e 70 cm
     // conforme o plano de frequências usado no país (IARU Região 2)
     static const std::vector<Band> HAM_BANDS = {
-        { "6 m", 50e6, 54e6, 50.125e6, USB, 2700, false, {} },
+        // 6 m: cai direto no FT8 (50,313, padrão nas Américas); o decodificador FT8 lê sozinho
+        { "6 m", 50e6, 54e6, 50.313e6, USB, 2700, false, {
+            { 50.000e6, 50.100e6, "CW", CW, 500 },
+            { 50.100e6, 50.300e6, "SSB", USB, 2700 },
+            { 50.300e6, 50.600e6, "Digital (FT8 50,313)", USB, 2700 },
+            { 50.600e6, 51.000e6, "Todos os modos", USB, 2700 },
+            { 51.000e6, 54.000e6, "FM", FM, 12500 } } },
         { "2 m", 144e6, 148e6, 145.000e6, FM, 12500, false, {
             { 144.000e6, 144.100e6, "CW", CW, 500 },
             { 144.100e6, 144.300e6, "SSB", USB, 2700 },
