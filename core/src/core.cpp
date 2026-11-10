@@ -706,6 +706,8 @@ int sdrpp_main(int argc, char* argv[]) {
     defConfig["moduleInstances"]["ADS-B"]["enabled"] = true;
     defConfig["moduleInstances"]["ACARS"]["module"] = "acars_decoder";
     defConfig["moduleInstances"]["ACARS"]["enabled"] = true;
+    defConfig["moduleInstances"]["APRS"]["module"] = "aprs_decoder";
+    defConfig["moduleInstances"]["APRS"]["enabled"] = true;
     defConfig["moduleInstances"]["TETRA Demodulator"]["module"] = "ch_tetra_demodulator";
     defConfig["moduleInstances"]["TETRA Demodulator"]["enabled"] = false;
     // defConfig["moduleInstances"]["Rigctl Client"] = "rigctl_client";
@@ -825,6 +827,7 @@ int sdrpp_main(int argc, char* argv[]) {
     core::configManager.conf["modules"][modCount++] = "ch_extravhf_decoder.so";
     core::configManager.conf["modules"][modCount++] = "adsb_decoder.so";
     core::configManager.conf["modules"][modCount++] = "acars_decoder.so";
+    core::configManager.conf["modules"][modCount++] = "aprs_decoder.so";
     core::configManager.conf["modules"][modCount++] = "ch_tetra_demodulator.so";
     core::configManager.conf["modules"][modCount++] = "reports_monitor.so";
 #endif
@@ -847,8 +850,8 @@ int sdrpp_main(int argc, char* argv[]) {
         core::configManager.conf["moduleInstances"][_name] = newMod;
     }
 
-    // Configurações antigas: cria as instâncias dos módulos novos (ADS-B, ACARS)
-    for (const char* inst : { "ADS-B", "ACARS" }) {
+    // Configurações antigas: cria as instâncias dos módulos novos (ADS-B, ACARS, APRS)
+    for (const char* inst : { "ADS-B", "ACARS", "APRS" }) {
         if (!core::configManager.conf["moduleInstances"].contains(inst)) {
             core::configManager.conf["moduleInstances"][inst] = defConfig["moduleInstances"][inst];
         }

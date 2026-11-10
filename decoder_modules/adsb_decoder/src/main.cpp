@@ -171,7 +171,15 @@ public:
         demod.isKnownIcao = [this](uint32_t icao) { return db.isKnown(icao); };
         server.getJson = [this]() {
             std::string j = db.toJson(nowSec(), true);
-            return std::string("{\"running\":") + (running ? "true" : "false") + "," + j.substr(1);
+            // estações APRS (módulo aprs_decoder) no mesmo mapa
+            std::string aprs = "[]";
+            for (auto& [n, inst] : core::moduleManager.instances) {
+                if (inst.module.info && inst.instance && std::string(inst.module.info->name) == "aprs_decoder") {
+                    aprs = inst.instance->handleDebugCommand("get_stations", "map");
+                }
+            }
+            if (aprs.empty() || aprs[0] != '[') { aprs = "[]"; }
+            return std::string("{\"running\":") + (running ? "true" : "false") + ",\"aprs\":" + aprs + "," + j.substr(1);
         };
 
         gui::menu.registerEntry(name, menuHandler, this, this);

@@ -39,7 +39,7 @@ namespace workspaces {
     };
     static const std::set<std::string> HAM_MENUS = {
         "Source", "Radio", "Frequency Manager", "Recorder", "Noise Reduction logmmse", "Sinks",
-        "FT8/FT4 Decoder", "Scanner", "Band Plan", "VHF Digital Modes"
+        "FT8/FT4 Decoder", "Scanner", "Band Plan", "VHF Digital Modes", "APRS"
     };
 
     static Workspace cur = AVIATION;
@@ -62,7 +62,7 @@ namespace workspaces {
             { "ADS-B", "ADS-B · radar" }, { "ACARS", "ACARS · CPDLC" }, { "Band Plan", "Plano de bandas" },
             { "Display", "Tela" }, { "Theme", "Tema" }, { "VFO Color", "Cores dos VFOs" },
             { "Module Manager", "Módulos" }, { "Scanner", "Varredura de faixa" }, { "FT8/FT4 Decoder", "FT8 / FT4" },
-            { "VHF Digital Modes", "DMR · P25" }, { "TETRA Demodulator", "TETRA" },
+            { "VHF Digital Modes", "DMR · P25" }, { "APRS", "APRS · mapa" }, { "TETRA Demodulator", "TETRA" },
         };
         auto it = N.find(name);
         return it == N.end() ? name : it->second;
@@ -373,6 +373,9 @@ namespace workspaces {
         bool acarsRunning = false;
         int acarsMsgs = 0;
         std::string acarsLast;
+        bool aprsRunning = false, aprsInRange = false;
+        int aprsStations = 0;
+        std::string aprsLast;
         bool dmrSync = false;
         int dmrOffset = 0;
         std::string dmrLast;
@@ -410,6 +413,15 @@ namespace workspaces {
                 s.acarsRunning = j.value("running", false);
                 s.acarsMsgs = j.value("messages", 0);
                 s.acarsLast = j.value("last", std::string());
+            }
+        }
+        if (auto ap = instanceOf("aprs_decoder")) {
+            json j = json::parse(ap->handleDebugCommand("get_stats", ""), nullptr, false);
+            if (!j.is_discarded()) {
+                s.aprsRunning = j.value("running", false);
+                s.aprsInRange = j.value("in_range", false);
+                s.aprsStations = j.value("stations", 0);
+                s.aprsLast = j.value("last", std::string());
             }
         }
         if (mode == RADIO_IFACE_MODE_NFM) {
@@ -994,6 +1006,15 @@ namespace workspaces {
             std::string cid = "##mode_" + std::to_string(id);
             if (chip(cid.c_str(), label, mode == id)) { selectMode(id); }
         }
+        // APRS: decodifica 145,570 ao lado, sem tirar o Rádio de onde está
+        if (cur == HAM && instanceOf("aprs_decoder")) {
+            flowNext(chipWidth("APRS"), sp);
+            if (chip("##aprs", "APRS", status.aprsRunning, 0, IM_COL32(255, 154, 60, 255))) {
+                if (auto ap = instanceOf("aprs_decoder")) { ap->handleDebugCommand(status.aprsRunning ? "stop" : "start", ""); }
+                statusAt = -100;
+            }
+            if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Decodifica o APRS (145,570 MHz) junto com o que você está ouvindo.\nAs estações aparecem no painel APRS · mapa e no mapa do navegador."); }
+        }
         bool modeInTab = std::find(ids.begin(), ids.end(), mode) != ids.end() || (cur == AVIATION && mode == AM);
         if (!modeInTab && mode >= 0) {
             // Modo atual não é desta aba (ex.: escolhido em outro painel): mostra mesmo assim
@@ -1204,6 +1225,11 @@ namespace workspaces {
         }
         if (mode == MODE_DSD) {
             item(status.dmrSync ? GREEN : GRAY, status.digLabel, status.dmrSync ? status.dmrInfo : (status.dmrLast.empty() ? std::string("sem sinal") : "sem sinal · última " + status.dmrLast));
+        }
+        if (cur == HAM && instanceOf("aprs_decoder") && status.aprsRunning) {
+            std::string v = !status.aprsInRange ? std::string("fora da faixa recebida") : std::to_string(status.aprsStations) + " estações";
+            if (status.aprsInRange && !status.aprsLast.empty()) { v += " · " + status.aprsLast; }
+            item(status.aprsInRange ? GREEN : AMBER, "APRS", v);
         }
         if (cur != HAM) {
             if (instanceOf("adsb_decoder")) {

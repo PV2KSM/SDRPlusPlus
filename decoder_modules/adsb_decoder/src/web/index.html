@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mapa ADS-B — SDR++</title>
+<title>Mapa — SDR+Easy</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
@@ -33,6 +33,10 @@
   #info a { color:var(--acc); }
   .plane-label { background:rgba(15,23,32,.75); color:#fff; border:0; border-radius:3px; padding:0 4px; font:11px system-ui, sans-serif; box-shadow:none; }
   .plane-label::before { display:none; }
+  .aprs-label { background:rgba(15,23,32,.75); color:#ffb35c; border:0; border-radius:3px; padding:0 4px; font:11px system-ui, sans-serif; box-shadow:none; }
+  .aprs-label::before { display:none; }
+  h2 { font-size:12px; font-weight:600; color:var(--dim); margin:0; padding:8px 8px 4px; letter-spacing:.06em; }
+  td.aprs { color:#ffb35c; }
   .leaflet-container { background:#0b1118; }
   @media (max-width: 760px) {
     #app { flex-direction:column; }
@@ -45,15 +49,18 @@
   <div id="map"></div>
   <aside id="side">
     <header>
-      <h1>✈ Aviões (ADS-B 1090 MHz)</h1>
+      <h1>Aviões (ADS-B) e APRS</h1>
       <div id="status">Conectando ao SDR++…</div>
     </header>
     <div id="controls">
       <label><input type="checkbox" id="trails" checked> Rastros</label>
       <label><input type="checkbox" id="labels" checked> Nomes</label>
       <label><input type="checkbox" id="follow"> Seguir selecionado</label>
+      <label><input type="checkbox" id="aprs" checked> APRS</label>
     </div>
-    <div id="list"><table><thead><tr><th>Voo</th><th class="n">Alt (ft)</th><th class="n">Vel (kt)</th><th class="n">Dist (km)</th></tr></thead><tbody id="rows"></tbody></table></div>
+    <div id="list"><table><thead><tr><th>Voo</th><th class="n">Alt (ft)</th><th class="n">Vel (kt)</th><th class="n">Dist (km)</th></tr></thead><tbody id="rows"></tbody></table>
+      <h2 id="aprsTitle">ESTAÇÕES APRS</h2>
+      <table><thead><tr><th>Estação</th><th>Tipo</th><th class="n">Dist (km)</th><th class="n">Há</th></tr></thead><tbody id="aprsRows"></tbody></table></div>
     <div id="info">Clique num avião para ver os detalhes.</div>
   </aside>
 </div>
@@ -131,10 +138,11 @@ async function refresh() {
   const st = document.getElementById('status');
   const list = data.aircraft || [];
   const withPos = list.filter(a => a.lat !== undefined);
-  st.className = data.running ? '' : 'err';
-  st.textContent = data.running
+  st.className = '';
+  const nAprs = (data.aprs || []).length;
+  st.textContent = (data.running
     ? `${list.length} aviões · ${withPos.length} com posição · ${fmt(data.messages)} mensagens`
-    : 'ADS-B desligado no SDR++ (clique em "Iniciar ADS-B")';
+    : 'ADS-B desligado') + (nAprs ? ` · ${nAprs} estações APRS` : '');
 
   if (data.receiver && (!receiver || receiver.lat !== data.receiver.lat || receiver.lon !== data.receiver.lon)) {
     receiver = data.receiver;
@@ -210,8 +218,79 @@ async function refresh() {
   showInfo(list.find(a => a.hex === selected));
 }
 
-refresh();
-setInterval(refresh, 1000);
+// ---------------------------------------------------------------- APRS
+const stations = {};   // call -> {marker, trail}
+function ago(s) { return s < 60 ? Math.round(s) + ' s' : s < 3600 ? Math.round(s / 60) + ' min' : (s / 3600).toFixed(1) + ' h'; }
+function esc(t) { return String(t ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function aprsDist(s) {
+  if (s.dist_km !== undefined) return s.dist_km;
+  if (!receiver) return undefined;
+  const k = Math.PI / 180, dla = (s.lat - receiver.lat) * k, dlo = (s.lon - receiver.lon) * k;
+  const a = Math.sin(dla / 2) ** 2 + Math.cos(receiver.lat * k) * Math.cos(s.lat * k) * Math.sin(dlo / 2) ** 2;
+  return 2 * 6371 * Math.asin(Math.sqrt(Math.min(1, a)));
+}
+function aprsPopup(s) {
+  const mv = [s.speed_kmh !== undefined ? s.speed_kmh + ' km/h' : '', s.course !== undefined && s.speed_kmh ? 'rumo ' + s.course + '°' : '', s.alt_m !== undefined ? Math.round(s.alt_m) + ' m' : ''].filter(x => x).join(' · ');
+  const d = aprsDist(s);
+  return `<b>${esc(s.call)}</b> ${s.sym_name ? '(' + esc(s.sym_name) + ')' : ''}<br>
+    ${s.comment ? esc(s.comment) + '<br>' : ''}${s.status ? 'Status: ' + esc(s.status) + '<br>' : ''}${mv ? mv + '<br>' : ''}
+    ${d !== undefined ? fmt(d, 1) + ' km · ' : ''}${s.direct ? 'ouvido direto' : 'via ' + esc(s.path)} · há ${ago(s.age)}<br>
+    <a href="https://aprs.fi/#!call=${encodeURIComponent(s.call)}" target="_blank" rel="noopener">ver no aprs.fi</a>`;
+}
+function drawAprs(list) {
+  const on = document.getElementById('aprs').checked;
+  const showLabels = document.getElementById('labels').checked;
+  const showTrails = document.getElementById('trails').checked;
+  const seen = new Set();
+  for (const s of (on ? list : [])) {
+    seen.add(s.call);
+    let p = stations[s.call];
+    const col = s.object ? '#c08cff' : (s.direct ? '#ff9a3c' : '#e0b070');
+    if (!p) {
+      p = stations[s.call] = {
+        marker: L.circleMarker([s.lat, s.lon], { radius: 7, color: '#0b1118', weight: 2, fillColor: col, fillOpacity: 1 }).addTo(map),
+        trail: L.polyline([], { color: '#ff9a3c', weight: 2, opacity: .55 }).addTo(map)
+      };
+      p.marker.bindPopup('');
+    }
+    p.marker.setLatLng([s.lat, s.lon]);
+    p.marker.setStyle({ fillColor: col });
+    p.marker.setPopupContent(aprsPopup(s));
+    if (showLabels) {
+      if (!p.marker.getTooltip()) p.marker.bindTooltip(esc(s.call), { permanent: true, direction: 'right', offset: [8, 0], className: 'aprs-label' });
+    } else if (p.marker.getTooltip()) p.marker.unbindTooltip();
+    p.trail.setLatLngs(showTrails ? (s.track || []) : []);
+  }
+  for (const c in stations) {
+    if (!seen.has(c)) { stations[c].marker.remove(); stations[c].trail.remove(); delete stations[c]; }
+  }
+  const rows = document.getElementById('aprsRows');
+  rows.innerHTML = '';
+  const sorted = [...list].sort((a, b) => a.age - b.age);
+  document.getElementById('aprsTitle').textContent = `ESTAÇÕES APRS (${list.length})`;
+  for (const s of sorted) {
+    const tr = document.createElement('tr');
+    const d = aprsDist(s);
+    tr.innerHTML = `<td class="aprs">${esc(s.call)}</td><td>${esc(s.sym_name || (s.object ? 'objeto' : ''))}</td><td class="n">${d !== undefined ? fmt(d) : '—'}</td><td class="n">${ago(s.age)}</td>`;
+    tr.onclick = () => { map.panTo([s.lat, s.lon]); if (stations[s.call]) stations[s.call].marker.openPopup(); };
+    rows.appendChild(tr);
+  }
+}
+async function refreshAll() {
+  await refresh();
+  try {
+    const r = await fetch('data/aircraft.json', { cache: 'no-store' });
+    const data = await r.json();
+    drawAprs(data.aprs || []);
+    if (!fitted && (data.aprs || []).length) {
+      map.fitBounds(L.latLngBounds(data.aprs.map(s => [s.lat, s.lon])).pad(0.3), { maxZoom: 11 });
+      fitted = true;
+    }
+  } catch (e) {}
+}
+
+refreshAll();
+setInterval(refreshAll, 2000);
 </script>
 </body>
 </html>
