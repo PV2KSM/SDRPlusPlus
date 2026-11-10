@@ -5,9 +5,14 @@ name: Android (SDR+Easy)
 
 on:
   push:
-    branches: [ master, scanner-simples ]
+    branches: [ master ]
     tags: [ 'v*' ]
   workflow_dispatch:
+
+# Um envio novo cancela a compilação anterior do mesmo ramo (a release só usa a última)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
