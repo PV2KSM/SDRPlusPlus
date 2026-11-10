@@ -13,6 +13,8 @@
 #include <cmath>
 #include <vector>
 #include <algorithm>
+#include <fstream>
+#include <sstream>
 #include "../../decoder_modules/radio/src/radio_interface.h"
 
 namespace workspaces {
@@ -916,6 +918,286 @@ namespace workspaces {
         }
     }
 
+    // ------------------------------------------------------------------ repetidoras
+    // Lista do usuário (config "repeaters"): um toque sintoniza em FM; bolinha verde = no ar agora
+    struct Repeater {
+        std::string name, city;
+        double out = 0;       // Hz (o que você ouve)
+        double offset = 0;    // Hz (entrada = saída + deslocamento)
+        float tone = 0;       // Hz, 0 = sem tom
+    };
+    static std::vector<Repeater> repeaters;
+    static bool repLoaded = false, showRepeaters = false;
+    static int repSel = -1;
+    static Repeater repEdit;
+    static std::string repMsg;
+
+    static void loadRepeaters() {
+        if (repLoaded) { return; }
+        repLoaded = true;
+        core::configManager.acquire();
+        if (core::configManager.conf.contains("repeaters") && core::configManager.conf["repeaters"].is_array()) {
+            for (auto& j : core::configManager.conf["repeaters"]) {
+                Repeater r;
+                r.name = j.value("name", std::string());
+                r.city = j.value("city", std::string());
+                r.out = j.value("out", 0.0);
+                r.offset = j.value("offset", 0.0);
+                r.tone = j.value("tone", 0.0f);
+                if (r.out > 0) { repeaters.push_back(r); }
+            }
+        }
+        core::configManager.release();
+    }
+
+    static void saveRepeaters() {
+        json a = json::array();
+        for (auto& r : repeaters) { a.push_back({ { "name", r.name }, { "city", r.city }, { "out", r.out }, { "offset", r.offset }, { "tone", r.tone } }); }
+        core::configManager.acquire();
+        core::configManager.conf["repeaters"] = a;
+        core::configManager.release(true);
+    }
+
+    // Deslocamento usual no Brasil: 2 m -600 kHz, 70 cm -5 MHz
+    static double defaultOffset(double f) {
+        if (f >= 144e6 && f <= 148e6) { return -600e3; }
+        if (f >= 430e6 && f <= 440e6) { return -5e6; }
+        if (f >= 50e6 && f <= 54e6) { return -1e6; }
+        return 0;
+    }
+
+    static const Repeater* repeaterAt(double f) {
+        for (auto& r : repeaters) {
+            if (std::fabs(r.out - f) < 1500) { return &r; }
+        }
+        return NULL;
+    }
+
+    // CSV: nome;saida_MHz;deslocamento_kHz;tom_Hz;cidade (vírgula decimal aceita)
+    static std::string repCsvPath() { return std::string(core::getRoot()) + "/repetidoras.csv"; }
+
+    static double csvNum(std::string t) {
+        for (auto& c : t) {
+            if (c == ',') { c = '.'; }
+        }
+        return atof(t.c_str());
+    }
+
+    static int importRepeaters() {
+        std::ifstream in(repCsvPath());
+        if (!in) { return -1; }
+        std::string line;
+        int n = 0;
+        while (std::getline(in, line)) {
+            if (!line.empty() && line.back() == '\r') { line.pop_back(); }
+            std::vector<std::string> f;
+            std::stringstream ss(line);
+            std::string c;
+            while (std::getline(ss, c, ';')) { f.push_back(c); }
+            if (f.size() < 2) { continue; }
+            double out = csvNum(f[1]) * 1e6;
+            if (out < 20e6 || out > 2e9) { continue; }   // cabeçalho ou linha inválida
+            Repeater r;
+            r.name = f[0];
+            r.out = std::round(out / 100.0) * 100.0;
+            r.offset = f.size() > 2 && !f[2].empty() ? csvNum(f[2]) * 1e3 : defaultOffset(r.out);
+            r.tone = f.size() > 3 ? (float)csvNum(f[3]) : 0;
+            r.city = f.size() > 4 ? f[4] : "";
+            bool dup = false;
+            for (auto& o : repeaters) { dup |= std::fabs(o.out - r.out) < 500 && o.name == r.name; }
+            if (!dup) {
+                repeaters.push_back(r);
+                n++;
+            }
+        }
+        std::sort(repeaters.begin(), repeaters.end(), [](const Repeater& a, const Repeater& b) { return a.out < b.out; });
+        saveRepeaters();
+        return n;
+    }
+
+    static bool exportRepeaters() {
+        std::ofstream o(repCsvPath());
+        if (!o) { return false; }
+        o << "nome;saida_MHz;deslocamento_kHz;tom_Hz;cidade\n";
+        for (auto& r : repeaters) {
+            char b[128];
+            snprintf(b, sizeof(b), ";%.4f;%.0f;%.1f;", r.out / 1e6, r.offset / 1e3, r.tone);
+            o << r.name << b << r.city << "\n";
+        }
+        return true;
+    }
+
+    // Potência na frequência f na última linha do espectro (dB acima do ruído), ou -1 se fora da tela
+    static std::vector<float> lastRow;
+    static double rowStart = 0, rowHzPx = 0;
+    static float rowFloor = 0;
+    static void grabRow() {
+        int width = 0;
+        float* fft = gui::waterfall.acquireLatestFFT(width);
+        if (!fft || width < 16) {
+            gui::waterfall.releaseLatestFFT();
+            lastRow.clear();
+            return;
+        }
+        lastRow.assign(fft, fft + width);
+        gui::waterfall.releaseLatestFFT();
+        double viewBw = gui::waterfall.getViewBandwidth();
+        rowStart = gui::waterfall.getCenterFrequency() + gui::waterfall.getViewOffset() - viewBw / 2.0;
+        rowHzPx = viewBw / width;
+        std::vector<float> sorted(lastRow);
+        std::nth_element(sorted.begin(), sorted.begin() + width / 2, sorted.end());
+        rowFloor = sorted[width / 2];
+    }
+    static float levelAt(double f) {
+        if (lastRow.empty() || rowHzPx <= 0) { return -1; }
+        int a = (int)((f - 5000 - rowStart) / rowHzPx), b = (int)((f + 5000 - rowStart) / rowHzPx);
+        if (b < 0 || a >= (int)lastRow.size()) { return -1; }
+        a = (std::max)(a, 0);
+        b = (std::min)(b, (int)lastRow.size() - 1);
+        float mx = -1000;
+        for (int i = a; i <= b; i++) { mx = (std::max)(mx, lastRow[i]); }
+        return mx - rowFloor;
+    }
+
+    static void drawRepeatersWindow() {
+        if (!showRepeaters) { return; }
+        loadRepeaters();
+        ImGui::SetNextWindowSize(ImVec2(560 * style::uiScale, 440 * style::uiScale), ImGuiCond_FirstUseEver);
+        if (!ImGui::Begin("Repetidoras##ws_rep", &showRepeaters, ImGuiWindowFlags_NoCollapse)) {
+            ImGui::End();
+            return;
+        }
+        static double lastGrab = -100;
+        if (nowSec() - lastGrab > 0.3) {
+            grabRow();
+            lastGrab = nowSec();
+        }
+        double f = radioFreq();
+        if (ImGui::Button("Adicionar a frequência atual")) {
+            Repeater r;
+            r.out = std::round(f / 100.0) * 100.0;
+            r.offset = defaultOffset(f);
+            r.tone = status.tone;   // o tom detectado no sinal, se houver
+            char b[32];
+            snprintf(b, sizeof(b), "%.3f", f / 1e6);
+            r.name = b;
+            repeaters.push_back(r);
+            std::sort(repeaters.begin(), repeaters.end(), [](const Repeater& a, const Repeater& b) { return a.out < b.out; });
+            for (int i = 0; i < (int)repeaters.size(); i++) {
+                if (repeaters[i].out == r.out && repeaters[i].name == r.name) { repSel = i; }
+            }
+            if (repSel >= 0) { repEdit = repeaters[repSel]; }
+            saveRepeaters();
+        }
+        if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Guarda a frequência do Rádio. Se a estação estiver no ar, o tom CTCSS detectado já vem preenchido."); }
+        ImGui::SameLine();
+        if (ImGui::Button("Importar CSV")) {
+            int n = importRepeaters();
+            repMsg = n < 0 ? "Não achei " + repCsvPath() : std::to_string(n) + " repetidoras importadas";
+        }
+        if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Lê repetidoras.csv na pasta do programa:\nnome;saida_MHz;deslocamento_kHz;tom_Hz;cidade\nex.: PY2XX Pico;146,790;-600;88,5;São Paulo"); }
+        ImGui::SameLine();
+        if (ImGui::Button("Exportar CSV")) { repMsg = exportRepeaters() ? "Salvo em " + repCsvPath() : "Não consegui salvar"; }
+        if (!repMsg.empty()) { ImGui::TextDisabled("%s", repMsg.c_str()); }
+
+        if (repeaters.empty()) {
+            ImGui::PushTextWrapPos(0);
+            ImGui::TextDisabled("Nenhuma repetidora ainda. Sintonize uma e toque em \"Adicionar a frequência atual\", ou importe um CSV.");
+            ImGui::PopTextWrapPos();
+        }
+        else if (ImGui::BeginTable("##rep_tab", 6, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp,
+                                   ImVec2(0, ImGui::GetContentRegionAvail().y - (repSel >= 0 ? 150 : 0) * style::uiScale))) {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 14 * style::uiScale);
+            ImGui::TableSetupColumn("Nome", ImGuiTableColumnFlags_WidthStretch, 1.6f);
+            ImGui::TableSetupColumn("Saída", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("Entrada", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("Tom", ImGuiTableColumnFlags_WidthStretch, 0.7f);
+            ImGui::TableSetupColumn("Cidade", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+            ImGui::TableHeadersRow();
+            for (int i = 0; i < (int)repeaters.size(); i++) {
+                Repeater& r = repeaters[i];
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                float lv = levelAt(r.out);
+                ImVec2 p = ImGui::GetCursorScreenPos();
+                float rad = 4.0f * style::uiScale, lh = ImGui::GetTextLineHeight();
+                ImU32 dc = lv < 0 ? IM_COL32(60, 70, 86, 255) : (lv > 10 ? IM_COL32(70, 210, 120, 255) : IM_COL32(90, 104, 120, 255));
+                ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + rad + 1, p.y + lh / 2), rad, dc);
+                ImGui::Dummy(ImVec2(rad * 2 + 2, lh));
+                if (ImGui::IsItemHovered()) { ImGui::SetTooltip(lv < 0 ? "Fora da faixa na tela" : (lv > 10 ? "No ar agora" : "Em silêncio")); }
+                ImGui::TableSetColumnIndex(1);
+                bool on = std::fabs(f - r.out) < 1500;
+                std::string lbl = r.name + "##rep" + std::to_string(i);
+                if (ImGui::Selectable(lbl.c_str(), on || repSel == i, ImGuiSelectableFlags_SpanAllColumns)) {
+                    tuneTo(r.out, RADIO_IFACE_MODE_NFM, 12500);
+                    repSel = i;
+                    repEdit = r;
+                }
+                ImGui::TableSetColumnIndex(2);
+                ImGui::Text("%.4f", r.out / 1e6);
+                ImGui::TableSetColumnIndex(3);
+                if (r.offset != 0) { ImGui::Text("%.4f", (r.out + r.offset) / 1e6); }
+                else { ImGui::TextDisabled("simplex"); }
+                ImGui::TableSetColumnIndex(4);
+                if (r.tone > 0) { ImGui::Text("%.1f", r.tone); }
+                else { ImGui::TextDisabled("-"); }
+                ImGui::TableSetColumnIndex(5);
+                ImGui::TextUnformatted(r.city.c_str());
+            }
+            ImGui::EndTable();
+        }
+        // edição da selecionada
+        if (repSel >= 0 && repSel < (int)repeaters.size()) {
+            ImGui::Separator();
+            static char nm[64], ct[64];
+            static int editing = -2;
+            if (editing != repSel) {
+                snprintf(nm, sizeof(nm), "%s", repEdit.name.c_str());
+                snprintf(ct, sizeof(ct), "%s", repEdit.city.c_str());
+                editing = repSel;
+            }
+            float w = ImGui::GetContentRegionAvail().x;
+            ImGui::SetNextItemWidth(w * 0.5f);
+            ImGui::InputText("Nome##rep_nm", nm, sizeof(nm));
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(w * 0.3f);
+            ImGui::InputText("Cidade##rep_ct", ct, sizeof(ct));
+            double outM = repEdit.out / 1e6, offK = repEdit.offset / 1e3;
+            ImGui::SetNextItemWidth(w * 0.3f);
+            if (ImGui::InputDouble("Saída MHz##rep_out", &outM, 0, 0, "%.4f")) { repEdit.out = std::round(outM * 1e4) * 100.0; }
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(w * 0.25f);
+            if (ImGui::InputDouble("Desloc. kHz##rep_off", &offK, 0, 0, "%.0f")) { repEdit.offset = offK * 1e3; }
+            ImGui::SetNextItemWidth(w * 0.3f);
+            ImGui::InputFloat("Tom Hz##rep_tone", &repEdit.tone, 0, 0, "%.1f");
+            ImGui::SameLine();
+            if (ImGui::Button("Usar o tom detectado") && status.tone > 0) { repEdit.tone = status.tone; }
+            if (ImGui::Button("Salvar##rep_save")) {
+                repEdit.name = nm;
+                repEdit.city = ct;
+                repeaters[repSel] = repEdit;
+                std::sort(repeaters.begin(), repeaters.end(), [](const Repeater& a, const Repeater& b) { return a.out < b.out; });
+                repSel = -1;
+                editing = -2;
+                saveRepeaters();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Apagar##rep_del")) {
+                repeaters.erase(repeaters.begin() + repSel);
+                repSel = -1;
+                editing = -2;
+                saveRepeaters();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Fechar edição##rep_close")) {
+                repSel = -1;
+                editing = -2;
+            }
+        }
+        ImGui::End();
+    }
+
     static const Band* hamBandShown = NULL;
     static void drawHamBand() {
         double f = radioFreq();
@@ -941,7 +1223,13 @@ namespace workspaces {
                                       b.hf ? "\nLiga sozinho o modo HF do RTL-SDR v3 (amostragem direta)" : "");
                 }
             }
+            if (pass == 0) {
+                flowNext(chipWidth("Repetidoras"), sp * 3);
+                if (chip("##ws_rep_btn", "Repetidoras", showRepeaters, 0, IM_COL32(76, 194, 255, 255))) { showRepeaters = !showRepeaters; }
+                if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Sua lista de repetidoras: um toque sintoniza, bolinha verde = no ar agora."); }
+            }
         }
+        drawRepeatersWindow();
         const Band& b = *hamBandShown;
         double step = b.hf ? 500 : (b.lo > 400e6 ? 12500 : 5000);
         drawRuler("##ham_ruler", b.lo, b.hi, b.plan, {}, step, b.mode, b.bw);
@@ -1208,6 +1496,14 @@ namespace workspaces {
         const ModeInfo* m = findMode(mode);
         std::string ms = m ? modeLabel(*m) : std::string("-");
         item(BLUE, LABELS[cur], std::string(fbuf) + "  " + ms + "  " + bwText(getBandwidth()));
+        if (cur == HAM) {
+            loadRepeaters();
+            if (const Repeater* r = repeaterAt(freq)) {
+                char rb[64] = "";
+                if (r->tone > 0) { snprintf(rb, sizeof(rb), " · tom %.1f", r->tone); }
+                item(BLUE, "Repetidora", r->name + rb);
+            }
+        }
         if (mode == RADIO_IFACE_MODE_NFM && status.tone > 0) {
             char tb[32];
             snprintf(tb, sizeof(tb), "CTCSS %.1f Hz", status.tone);
