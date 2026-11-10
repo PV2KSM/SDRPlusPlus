@@ -145,6 +145,7 @@ public:
     int demodMode = 0;         // 0 automática, 1 C4FM/4FSK, 2 simulcast (CQPSK)
     double autoFreq = 0, autoLast = 0, autoBad = 0, autoWait = 2.0;
     int autoTries = 0;
+    bool suggestOld = false;   // nem DMR nem P25 abrem: sugere o motor antigo (D-STAR, NXDN)
     double afcPpm = 0, afcPpmSaved = 0;   // erro do receptor aprendido nos sinais já decodificados
     bool havePpm = false;
     // Correção de ppm do RTL-SDR (vale para todos os modos), medida no AFC do DMR/P25
@@ -482,6 +483,7 @@ private:
             autoBad = 0;
             autoWait = 2.0;
             autoTries = 0;
+            suggestOld = false;
             if (havePpm) { demod::DSD::presetAfcForRadio("Radio", afcPpm * 1e-6 * f); }
             return;
         }
@@ -491,6 +493,7 @@ private:
             autoBad = 0;
             autoWait = 2.0;
             autoTries = 0;
+            suggestOld = false;
             if (st.locked) {
                 double ppm = (double)st.offset_hz / f * 1e6;
                 if (autoPpm) { ppmStep(ppm, now); }
@@ -516,6 +519,7 @@ private:
         if (++autoTries >= 2) {
             autoTries = 0;
             autoWait = (std::min)(autoWait * 2.0, 16.0);
+            if (autoWait >= 8.0) { suggestOld = true; }
         }
         cqpsk = !cqpsk;
         demod::DSD::setCqpskAll(cqpsk);
@@ -875,6 +879,17 @@ private:
         if (c && c->emergency && callActive) {
             ImGui::SameLine();
             ImGui::TextColored(red, "  EMERGÊNCIA");
+        }
+        // nada abre: pode ser D-STAR, NXDN (motor antigo) ou analógico
+        if (suggestOld && !st.sync) {
+            ImGui::PushTextWrapPos(0);
+            ImGui::TextColored(amber, "Tem sinal, mas não é DMR nem P25. Pode ser D-STAR, NXDN ou FM comum.");
+            ImGui::PopTextWrapPos();
+            if (ImGui::Button("Tentar D-STAR / NXDN##try_old")) {
+                int m = RADIO_DEMOD_OLDDSD;
+                core::modComManager.callInterface("Radio", RADIO_IFACE_CMD_SET_MODE, &m, NULL);
+            }
+            if (ImGui::IsItemHovered()) { ImGui::SetTooltip("Muda o Rádio para o decodificador antigo, que também lê D-STAR, NXDN, X2-TDMA e ProVoice.\nPara voltar, escolha DMR · P25 de novo."); }
         }
         // seguindo troncalizado
         if (onVoice) { ImGui::TextColored(amber, "Seguindo conversa em %.4f MHz", voiceFreq / 1e6); }

@@ -309,7 +309,7 @@ namespace dsp {
     * GNU General Public License for more details.
     *
     */
-    void dstar_header_decode(int radioheaderbuffer[660]) {
+    void dstar_header_decode(int radioheaderbuffer[660], std::string* out) {
         int radioheaderbuffer2[660];
         unsigned char radioheader[41];
         int octetcount, bitcount, loop;
@@ -335,6 +335,23 @@ namespace dsp {
             if (bitcount >= 8) {
                 octetcount++;
                 bitcount = 0;
+            }
+        }
+        // cabeçalho para a tela: quem fala (MY), para quem (UR) e as repetidoras
+        if (out) {
+            auto field = [&](int a, int n) {
+                std::string f;
+                for (int i = a; i < a + n; i++) {
+                    char c = (char)radioheader[i];
+                    f += (c >= 32 && c < 127) ? c : ' ';
+                }
+                size_t e = f.find_last_not_of(' ');
+                return e == std::string::npos ? std::string() : f.substr(0, e + 1);
+            };
+            std::string my = field(27, 8), sfx = field(35, 4), ur = field(19, 8), r1 = field(11, 8), r2 = field(3, 8);
+            if (!my.empty()) {
+                *out = "MY " + my + (sfx.empty() ? "" : " /" + sfx) + " · UR " + (ur.empty() ? "-" : ur);
+                if (!r1.empty()) { *out += " · RPT " + r1 + (r2.empty() ? "" : " > " + r2); }
             }
         }
         // print header
@@ -466,7 +483,7 @@ namespace dsp {
             radioheaderbuffer[j] = getDibit();
         }
         // Note: These routines contain GPLed code. Remove if you object to that.
-        dstar_header_decode(radioheaderbuffer);
+        dstar_header_decode(radioheaderbuffer, &status_last_dstar_header);
         //We officially have sync now, so just pass on to the above routine:
         processDSTAR();
 

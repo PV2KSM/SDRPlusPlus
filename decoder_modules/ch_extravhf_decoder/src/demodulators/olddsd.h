@@ -108,6 +108,11 @@ namespace demod {
             ImGui::TextColored(p25_color, "Last P25 nac: %d src: %d tg: %d DUID: %s", dsdDec.status_last_nac, dsdDec.status_last_src, dsdDec.status_last_tg, dsdDec.status_last_p25_duid.c_str());
             ImGui::TextColored(dmr_color, "Last DMR S0: %s S1: %s", dsdDec.status_last_dmr_slot0_burst.c_str(), dsdDec.status_last_dmr_slot1_burst.c_str());
             ImGui::TextColored(nxdn_color, "Last NXDN type: %s", dsdDec.status_last_nxdn_type.c_str());
+            if (!dsdDec.status_last_dstar_header.empty()) {
+                ImGui::PushTextWrapPos(0);
+                ImGui::TextColored(ImVec4(0.96f, 0.69f, 0.25f, 1.0f), "D-STAR: %s", dsdDec.status_last_dstar_header.c_str());
+                ImGui::PopTextWrapPos();
+            }
             ImGui::TextColored(bar_color, "Voice err: %s", dsdDec.status_errorbar.c_str());
         }
 

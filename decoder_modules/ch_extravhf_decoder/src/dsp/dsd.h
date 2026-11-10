@@ -527,6 +527,7 @@ namespace dsp {
         std::string status_last_dmr_slot0_burst = "";
         std::string status_last_dmr_slot1_burst = "";
         std::string status_last_nxdn_type = "";
+        std::string status_last_dstar_header = "";   // MY/UR/RPT do último cabeçalho D-STAR
         std::string status_errorbar = "";
         bool status_mbedecoding = false;
         int status_lvl = 0;
