@@ -421,13 +421,28 @@ void MainWindow::drawUpperLine(ImGui::WaterfallVFO* vfo) {
     ImGui::SameLine();
 
     int snrOffset = 87.0f * style::uiScale;
-    int snrWidth = std::clamp<int>(ImGui::GetWindowSize().x - ImGui::GetCursorPosX() - snrOffset, 100.0f * style::uiScale, 300.0f * style::uiScale);
-    int snrPos = std::max<int>(ImGui::GetWindowSize().x - (snrWidth + snrOffset), ImGui::GetCursorPosX());
+    // medidores L/R do áudio à direita do S-meter
+    int lrWidth = 96.0f * style::uiScale, lrGap = 14.0f * style::uiScale;
+    int snrWidth = std::clamp<int>(ImGui::GetWindowSize().x - ImGui::GetCursorPosX() - snrOffset - lrWidth - lrGap, 100.0f * style::uiScale, 300.0f * style::uiScale);
+    int snrPos = std::max<int>(ImGui::GetWindowSize().x - (snrWidth + snrOffset + lrWidth + lrGap), ImGui::GetCursorPosX());
 
     ImGui::SetCursorPosX(snrPos);
     ImGui::SetCursorPosY(origY + (5.0f * style::uiScale));
     ImGui::SetNextItemWidth(snrWidth);
     ImGui::SNRMeter((vfo != NULL) ? gui::waterfall.selectedVFOSNR : 0);
+
+    {
+        float pl = 0, pr = 0;
+        auto it = sigpath::sinkManager.streams.find(gui::waterfall.selectedVFO);
+        if (it != sigpath::sinkManager.streams.end() && it->second) {
+            pl = it->second->volumeAjust.peakL;
+            pr = it->second->volumeAjust.peakR;
+        }
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(snrPos + snrWidth + lrGap);
+        ImGui::SetCursorPosY(origY + (5.0f * style::uiScale));
+        ImGui::LRMeter(pl, pr, ImVec2(lrWidth, 26.0f * style::uiScale));
+    }
 }
 
 long long lastDrawTime = 0;

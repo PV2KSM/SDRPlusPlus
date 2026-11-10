@@ -103,6 +103,13 @@ namespace displaymenu {
     }
 
     void init() {
+        // Visual do SDR+Easy, aplicado uma vez: cascata nova, espectro preenchido e linha de pico
+        if (!core::configManager.conf.contains("visualEasy")) {
+            core::configManager.conf["visualEasy"] = true;
+            core::configManager.conf["colorMap"] = "SDR+Easy";
+            core::configManager.conf["showFFTShadows"] = true;
+            core::configManager.conf["fftHold"] = true;
+        }
         if (core::configManager.conf.contains("showFFT")) {
             showFFT = core::configManager.conf["showFFT"];
         }

@@ -817,6 +817,38 @@ private:
             ImGui::SameLine();
             ImGui::TextColored(dc, "%s", stTxt);
         }
+        // gráfico dos 4 níveis: quatro morros separados = sinal limpo
+        {
+            float hb[demod::DSD::HIST_BINS];
+            float lm, ce, um;
+            if (demod::DSD::getLevelsForRadio("Radio", hb, lm, ce, um)) {
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                float w = ImGui::GetContentRegionAvail().x, h = 34.0f * style::uiScale;
+                ImVec2 p = ImGui::GetCursorScreenPos();
+                dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), IM_COL32(10, 16, 28, 255), 5.0f * style::uiScale);
+                float mx = 1e-6f;
+                for (float v : hb) { mx = (std::max)(mx, v); }
+                int n = demod::DSD::HIST_BINS;
+                float bw = w / n;
+                for (int i = 0; i < n; i++) {
+                    float v = hb[i] / mx;
+                    float bh = (h - 4) * v;
+                    dl->AddRectFilled(ImVec2(p.x + i * bw + 1, p.y + h - 2 - bh), ImVec2(p.x + (i + 1) * bw - 1, p.y + h - 2),
+                                      v > 0.5f ? IM_COL32(92, 200, 255, 255) : IM_COL32(45, 110, 163, 255), 1.0f);
+                }
+                auto xOf = [&](float lv) { return p.x + (lv + 1.5f) / 3.0f * w; };
+                for (float t : { lm, ce, um }) {
+                    float x = xOf(t);
+                    for (float y = p.y + 2; y < p.y + h - 2; y += 6) { dl->AddLine(ImVec2(x, y), ImVec2(x, (std::min)(y + 3, p.y + h - 2)), IM_COL32(240, 162, 74, 255)); }
+                }
+                ImGui::Dummy(ImVec2(w, h));
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Os 4 níveis do sinal digital. Quatro morros separados = sinal limpo.\n"
+                                      "Se eles se misturam, o sinal está fraco ou fora do centro.\n"
+                                      "Linhas laranja: onde o decodificador separa os níveis.");
+                }
+            }
+        }
         // 2-4. chamada atual, ou a última (apagada)
         const Call* c = callActive ? &cur : (calls.empty() ? nullptr : &calls.front());
         ImVec4 tc = callActive ? ImGui::GetStyle().Colors[ImGuiCol_Text] : dim;

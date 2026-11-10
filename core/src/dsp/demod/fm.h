@@ -90,6 +90,7 @@ namespace dsp::demod {
             if constexpr (std::is_same_v<T, float>) {
                 demod.process(count, in, out);
                 tone.feed(out, count);
+                measure(out, count);
                 if (filtering) {
                     std::lock_guard<std::mutex> lck(filterMtx);
                     fir.process(count, out, out);
@@ -98,6 +99,7 @@ namespace dsp::demod {
             if constexpr (std::is_same_v<T, stereo_t>) {
                 demod.process(count, in, demod.out.writeBuf);
                 tone.feed(demod.out.writeBuf, count);
+                measure(demod.out.writeBuf, count);
                 if (filtering) {
                     std::lock_guard<std::mutex> lck(filterMtx);
                     fir.process(count, demod.out.writeBuf, demod.out.writeBuf);
@@ -121,7 +123,31 @@ namespace dsp::demod {
         // tom CTCSS do sinal recebido (Hz) ou 0
         ToneMeter tone;
 
+        // Gráfico de modulação: desvio de pico (Hz) e osciloscópio do áudio (±1 = desvio máximo)
+        static constexpr int SCOPE_LEN = 256;
+        std::atomic<float> peakDeviation { 0.0f };
+        float scope[SCOPE_LEN] = {};
+        std::atomic<int> scopePos { 0 };
+
+        void measure(const float* x, int count) {
+            float pk = 0;
+            for (int i = 0; i < count; i++) {
+                float a = fabsf(x[i]);
+                if (a > pk) { pk = a; }
+                // ~8 kHz de taxa no osciloscópio (256 pontos = 32 ms)
+                if (++_scopeDiv >= (std::max)(1, (int)(_samplerate / 8000.0))) {
+                    _scopeDiv = 0;
+                    int p = scopePos;
+                    scope[p] = x[i];
+                    scopePos = (p + 1) % SCOPE_LEN;
+                }
+            }
+            peakDeviation = pk * (float)(_bandwidth / 2.0);
+        }
+
     private:
+        int _scopeDiv = 0;
+
         void updateFilter(bool lowPass, bool highPass) {
             std::lock_guard<std::mutex> lck(filterMtx);
 

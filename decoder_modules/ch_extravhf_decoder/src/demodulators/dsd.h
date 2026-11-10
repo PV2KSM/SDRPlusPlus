@@ -240,6 +240,24 @@ namespace demod {
             if (it != instances.end() && it->second) { it->second->decoder.muteVoice = mute; }
         }
 
+        static constexpr int HIST_BINS = 60;
+
+        // Gráfico dos 4 níveis: histograma (HIST_BINS valores) e limiares do decodificador
+        static bool getLevelsForRadio(const std::string& radioName, float* out, float& lmid, float& center, float& umid) {
+            std::lock_guard<std::mutex> lock(registryMtx);
+            auto it = instances.find(radioName);
+            if (it == instances.end() || !it->second) { return false; }
+            DSD* d = it->second;
+            {
+                std::lock_guard<std::mutex> lck(d->histMtx);
+                for (int i = 0; i < HIST_BINS; i++) { out[i] = d->hist[i]; }
+            }
+            lmid = d->slicer.lmid;
+            center = d->slicer.center;
+            umid = d->slicer.umid;
+            return true;
+        }
+
         static void setCqpskAll(bool on) {
             cqpskMode = on;
             std::lock_guard<std::mutex> lock(registryMtx);
@@ -499,8 +517,21 @@ namespace demod {
 
         std::string name;
 
+        // Histograma dos símbolos (gráfico dos 4 níveis): -1,5..+1,5 em HIST_BINS faixas, suavizado
+        float hist[HIST_BINS] = {};
+        std::mutex histMtx;
+
         static void _constDiagSinkHandler(float* data, int count, void* ctx) {
             DSD* _this = (DSD*)ctx;
+            {
+                float h[HIST_BINS] = {};
+                for (int i = 0; i < count; i++) {
+                    int b = (int)((data[i] + 1.5f) / 3.0f * HIST_BINS);
+                    if (b >= 0 && b < HIST_BINS) { h[b] += 1.0f; }
+                }
+                std::lock_guard<std::mutex> lck(_this->histMtx);
+                for (int b = 0; b < HIST_BINS; b++) { _this->hist[b] += 0.3f * (h[b] - _this->hist[b]); }
+            }
             dsp::complex_t* cdBuff = _this->constDiag.acquireBuffer();
             if (count == 1024) {
                 for (int i = 0; i < 1021; i++) {

@@ -1,6 +1,8 @@
 #pragma once
 #include "../processor.h"
+#include <atomic>
 #include "../loop/agc.h"
+#include "morse_ident.h"
 #include "../correction/dc_blocker.h"
 #include "../convert/mono_to_stereo.h"
 #include "../filter/fir.h"
@@ -30,6 +32,7 @@ namespace dsp::demod {
             _agcMode = agcMode;
             _bandwidth = bandwidth;
             _samplerate = samplerate;
+            morse.setSamplerate(samplerate);
 
             carrierAgc.init(NULL, 1.0, agcAttack, agcDecay, 10e6, 10.0, INFINITY);
             audioAgc.init(NULL, 1.0, agcAttack, agcDecay, 10e6, 10.0, INFINITY);
@@ -98,6 +101,33 @@ namespace dsp::demod {
             base_type::tempStart();
         }
 
+        // indicativo em Morse dos radiofaróis (VOR/ILS/NDB)
+        MorseIdent morse;
+
+        // Profundidade de modulação (0..1) e envoltória normalizada para o gráfico de modulação
+        static constexpr int SCOPE_LEN = 256;
+        std::atomic<float> depth { 0.0f };
+        float scope[SCOPE_LEN] = {};
+        std::atomic<int> scopePos { 0 };
+
+        void measureEnvelope(const float* e, int count) {
+            if (count <= 0) { return; }
+            float mean = 0, mx = 0;
+            for (int i = 0; i < count; i++) {
+                mean += e[i];
+                if (e[i] > mx) { mx = e[i]; }
+            }
+            mean /= count;
+            if (mean <= 0) { return; }
+            depth = (std::min)(1.5f, (mx - mean) / mean);
+            int step = (std::max)(1, count / 32);
+            for (int i = 0; i < count; i += step) {
+                int p = scopePos;
+                scope[p] = e[i] / mean - 1.0f;
+                scopePos = (p + 1) % SCOPE_LEN;
+            }
+        }
+
         int process(int count, complex_t* in, T* out) {
             // Apply carrier AGC if needed
             if (_agcMode == AGCMode::CARRIER) {
@@ -107,6 +137,7 @@ namespace dsp::demod {
 
             if constexpr (std::is_same_v<T, float>) {
                 volk_32fc_magnitude_32f(out, (lv_32fc_t*)in, count);
+                measureEnvelope(out, count);
                 dcBlock.process(count, out, out);
                 if (_agcMode == AGCMode::AUDIO) {
                     audioAgc.process(count, out, out);
@@ -118,7 +149,9 @@ namespace dsp::demod {
             }
             if constexpr (std::is_same_v<T, stereo_t>) {
                 volk_32fc_magnitude_32f(audioAgc.out.writeBuf, (lv_32fc_t*)in, count);
+                measureEnvelope(audioAgc.out.writeBuf, count);
                 dcBlock.process(count, audioAgc.out.writeBuf, audioAgc.out.writeBuf);
+                morse.feed(audioAgc.out.writeBuf, count);
                 if (_agcMode == AGCMode::AUDIO) {
                     audioAgc.process(count, audioAgc.out.writeBuf, audioAgc.out.writeBuf);
                 }

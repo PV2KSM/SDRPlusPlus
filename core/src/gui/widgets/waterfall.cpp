@@ -204,6 +204,9 @@ namespace ImGui {
         ImU32 trace = ImGui::GetColorU32(ImGuiCol_PlotLines);
         ImU32 traceHold = ImGui::ColorConvertFloat4ToU32(gui::themeManager.fftHoldColor);
         ImU32 shadow = ImGui::GetColorU32(ImGuiCol_PlotLines, 0.2);
+        // preenchimento em degradê sob o espectro (forte perto da linha, some embaixo)
+        ImU32 fillTop = ImGui::GetColorU32(ImGuiCol_PlotLines, 0.38f);
+        ImU32 fillBot = ImGui::GetColorU32(ImGuiCol_PlotLines, 0.03f);
         ImU32 text = ImGui::GetColorU32(ImGuiCol_Text);
         float textVOffset = 10.0f * style::uiScale;
 
@@ -251,8 +254,9 @@ namespace ImGui {
                         //                        double aPos = fftAreaMax.y - ((latestFFT[i - 1] - fftMin) * scaleFactor);
                         //                        window->DrawList->AddLine(ImVec2(fftAreaMin.x + i - 1, roundf(aPos)),
                         //                                                  ImVec2(fftAreaMin.x + i, roundf(bPos)), trace, 1.0);
-                        window->DrawList->AddLine(ImVec2(fftAreaMin.x + i, roundf(bPos)),
-                                                  ImVec2(fftAreaMin.x + i, fftAreaMax.y), shadow, 1.0);
+                        window->DrawList->AddRectFilledMultiColor(ImVec2(fftAreaMin.x + i, roundf(bPos)),
+                                                                  ImVec2(fftAreaMin.x + i + 1, fftAreaMax.y), fillTop, fillTop, fillBot, fillBot);
+                        (void)shadow;
                     }
                 }
                 window->DrawList->AddPolyline(traces.data(), traces.size(), trace, 0, 1.0);

@@ -1,5 +1,7 @@
 #pragma once
 #include "../processor.h"
+#include <atomic>
+#include <cmath>
 
 // TODO: This block is useless and weird, get rid of it
 namespace dsp::audio {
@@ -43,9 +45,22 @@ namespace dsp::audio {
         }
 
         inline int process(int count, const stereo_t* in, stereo_t* out) {
+            // pico de cada canal antes do volume (medidores L/R da janela principal)
+            float pl = 0, pr = 0;
+            for (int i = 0; i < count; i++) {
+                float l = fabsf(in[i].l), r = fabsf(in[i].r);
+                if (l > pl) { pl = l; }
+                if (r > pr) { pr = r; }
+            }
+            peakL = pl;
+            peakR = pr;
             volk_32f_s32f_multiply_32f((float*)out, (float*)in, (_muted || _tempMuted) ? 0.0f : _volume, count * 2);
             return count;
         }
+
+        // pico do último bloco de áudio (0..1+), por canal
+        std::atomic<float> peakL { 0.0f };
+        std::atomic<float> peakR { 0.0f };
 
         virtual int run() {
 //            flog::info("VolumeAdjust: reading from: {}", base_type::_in->origin);

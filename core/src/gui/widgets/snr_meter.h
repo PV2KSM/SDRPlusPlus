@@ -12,4 +12,5 @@ namespace ImGui {
     SDRPP_EXPORT Event<SNRMeterExtPoint> onSNRMeterExtPoint;
 
     void SNRMeter(float val, const ImVec2& size_arg = ImVec2(0, 0));
+    void LRMeter(float l, float r, const ImVec2& size_arg = ImVec2(0, 0));
 }
